@@ -1,0 +1,97 @@
+ПРОМПТ ДЛЯ ШАГА 1 — СХЕМА БАЗЫ ДАННЫХ (PostgreSQL)
+
+Хочу спроектировать схему базы данных PostgreSQL для аналитики бизнеса по ремонту бытовой техники. Технологический стек дальше будет: Python (ETL, агрегации) + Postgres + Grafana. Задача этого шага — описать и создать таблицы так, чтобы:
+
+- все сырые данные (Jobs, Payments, Calls, лиды из eLocals, Pro Referral, Google spend и т.д.) хранились в отдельных “raw” таблицах;
+- все агрегированные метрики (по дням и месяцам, по Source и сегменту) были в отдельных таблицах daily_metrics и monthly_metrics, и именно они будут использоваться в Grafana;
+- в будущем Python-скрипты будут обновлять daily_metrics и monthly_metrics по расписанию.
+
+Про бизнес-логику (очень важно учитывать в дизайне схемы):
+
+1. Unit
+   - Unit = запись в Jobs, где Type IN ('COD Service', 'INS Service').
+
+2. Repair
+   - Repair = запись в Jobs, где:
+     - Type IN ('COD Repair', 'INS Repair') ИЛИ
+     - (Type = 'COD Service' И сумма оплат по этому Job (payments.Amount) > 100$).
+
+3. Сегменты:
+   - Segment = 'COD', если в Type есть COD.
+   - Segment = 'INS', если в Type есть INS.
+   - Остальное можно отнести к OTHER.
+
+4. Leads (по источникам Source):
+   - eLocals → Leads считаются по CSV leads cost Elocals*.csv: количество строк, где Cost > 0.
+   - Pro Referral → Leads считаются по CSV: количество строк, где Current Status != 'Passed'.
+   - Google → Leads = количество Jobs, где Source = 'Google' (пока нет нормального call-tracking).
+   - Rely, NSA, Liberty → Leads = Units (то есть мы считаем лидом только тех, кто дошёл до сервисного визита).
+   - Retention → Leads = количество Jobs, где Source = 'Retention'.
+   - Можно предусмотреть расширение, чтобы потом добавить ещё каналы.
+
+5. Cost (стоимость лидов, по Source):
+   - eLocals → сумма Cost по CSV с Cost > 0.
+   - Pro Referral → Leads * 20$.
+   - Google → берётся из отдельной таблицы google_spend по месяцу.
+   - Остальные (Rely/NSA/Liberty/Retention) → Cost = 0 (считаем бесплатными).
+
+6. Revenue (чистый доход после выплат):
+   - Сырые оплаты хранятся в payments.Amount (брутто).
+   - Для аналитики мы используем Revenue40 = sum(Amount) * 0.40 (так как 50% платится технику + около 20% постоянных расходов).
+   - В агрегированных таблицах нужно хранить именно revenue40 (можно ещё и revenue_gross как опцию).
+
+7. Целевые метрики (targets):
+   - Хочу хранить целевые значения по месяцам, например:
+     - целевой Repairs / месяц,
+     - целевой Revenue40 / месяц,
+     - целевой Conv L→R,
+     - целевой CPL (максимум).
+   - Эти Targets должны сравниваться в Grafana с фактическими monthly_metrics.
+
+Что мне нужно от тебя:
+
+1. Спроектируй схему базы данных PostgreSQL, включив в неё минимум такие таблицы:
+
+   - jobs
+   - payments
+   - calls (чтобы в будущем можно было строить воронку по звонкам)
+   - elocals_leads
+   - proref_leads
+   - google_spend
+   - daily_metrics
+   - monthly_metrics
+   - targets
+
+2. Для каждой таблицы опиши:
+
+   - назначение (что хранится и для чего),
+   - поля (имя, тип, nullable/not null, кратко про смысл),
+   - ключи: PRIMARY KEY, внешние ключи (например, payments.job_id → jobs.job_id),
+   - индексы, которые стоит сделать (по date, month, source, segment и т.д.), чтобы запросы из Grafana работали быстро.
+
+3. После текстового описания схемы — напиши конкретные SQL-скрипты CREATE TABLE для PostgreSQL (с типами timestamptz, numeric, varchar, integer и т.д.), которыми я смогу реально инициализировать базу:
+
+   - сначала таблицы raw-данных (jobs, payments, …),
+   - потом таблицы агрегатов (daily_metrics, monthly_metrics, targets).
+
+4. Учитывай, что:
+
+   - month удобно хранить как date с первым числом месяца (2024-10-01, 2024-11-01 и т.п.);
+   - date в daily_metrics — обычная дата (без времени);
+   - поля source и segment лучше делать текстовыми (varchar), но с рекомендацией ограничить значения на уровне приложения (ENUMы можно предложить как опционально);
+   - должны быть удобные ключи для запросов типа:
+     - “все метрики по month/source/segment”,
+     - “все ежедневные метрики по текущему месяцу”.
+
+5. В конце дай пример пары запросов, которые потом можно использовать в Grafana:
+
+   - запрос для дашборда “Месяц к месяцу по source” (из monthly_metrics),
+   - запрос для дашборда “ежедневный накопительный Repairs vs Target” (из daily_metrics + targets).
+
+Сформируй ответ в виде:
+
+1. Описание таблиц (текстом).
+2. Полный SQL CREATE TABLE ... для всех таблиц.
+3. Примеры SELECT-запросов для Grafana.
+
+Это весь контекст. Помни: язык — PostgreSQL, акцент на агрегированных таблицах для быстрой работы с Grafana.
