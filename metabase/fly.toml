@@ -1,0 +1,33 @@
+app = "abc-metrics-metabase"
+primary_region = "iad"
+
+[build]
+  image = "metabase/metabase:latest"
+
+[env]
+  MB_JETTY_PORT = "3000"
+  MB_JETTY_HOST = "0.0.0.0"
+  MB_DB_TYPE = "h2"
+  MB_DB_FILE = "/metabase-data/metabase.db"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512
+  processes = ["app"]
+
+[mounts]
+  source = "metabase_data"
+  destination = "/metabase-data"
+
+[processes]
+  app = ""
+
