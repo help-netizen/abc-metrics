@@ -5,6 +5,7 @@
 
 import express from 'express';
 import * as dotenv from 'dotenv';
+import path from 'path';
 import pool from './db/connection';
 import migrate from './db/migrate';
 import routes from './api/routes';
@@ -30,6 +31,11 @@ app.use((req, res, next) => {
     next();
   }
 });
+
+// Static files (must be before API routes)
+// In production (dist/), __dirname is dist/, so public is at ../public
+// In development, __dirname is src/, so public is at ../public
+app.use(express.static(path.join(__dirname, '../public')));
 
 // API routes
 app.use(routes);

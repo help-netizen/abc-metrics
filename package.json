@@ -7,7 +7,10 @@
     "build": "tsc",
     "start": "node dist/metrics-collector.js",
     "dev": "ts-node src/metrics-collector.ts",
-    "migrate": "ts-node src/db/migrate.ts"
+    "migrate": "ts-node src/db/migrate.ts",
+    "setup-metabase": "node metabase/setup-metabase.js",
+    "diagnose-metabase": "node metabase/diagnose.js",
+    "diagnose-metabase-remote": "bash metabase/diagnose-remote.sh"
   },
   "keywords": [
     "metrics",

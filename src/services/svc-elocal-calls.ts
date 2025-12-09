@@ -29,8 +29,11 @@ export class SvcElocalCalls {
    */
   private async getBrowser(): Promise<Browser> {
     if (!this.browser) {
+      const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
       this.browser = await puppeteer.launch({
         headless: true,
+        executablePath: executablePath,
+        protocolTimeout: 300000, // 5 minutes timeout for network operations
         args: [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -57,85 +60,124 @@ export class SvcElocalCalls {
    * Authenticate with elocal.com using Puppeteer
    */
   async authenticate(page: Page): Promise<boolean> {
+    const authStartTime = Date.now();
     try {
-      console.log('Authenticating with elocal.com using Puppeteer...');
+      console.log(`[AUTH] Authenticating with elocal.com using Puppeteer (username: ${this.username})...`);
       
       const loginUrl = `https://www.elocal.com/business_users/login?manual_login=true&username=${encodeURIComponent(this.username)}`;
+      console.log(`[AUTH] Navigating to login page: ${loginUrl}`);
       
-      // Navigate to login page
-      await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      // Navigate to login page with increased timeout
+      await page.setDefaultNavigationTimeout(120000); // 2 minutes
+      await page.setDefaultTimeout(120000); // 2 minutes
+      await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 120000 });
       
       // Check if we're already logged in
       const initialUrl = page.url();
+      console.log(`[AUTH] Initial URL after navigation: ${initialUrl}`);
       if (!initialUrl.includes('/login')) {
-        console.log('Already logged in (not on login page)');
+        const authTime = ((Date.now() - authStartTime) / 1000).toFixed(2);
+        console.log(`[AUTH] Already logged in (not on login page) (took ${authTime}s)`);
         return true;
       }
       
+      // Wait for page to fully load
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
       // Wait for password input field or check if already logged in
+      let passwordField = null;
       try {
-        await page.waitForSelector('input[type="password"]', { timeout: 15000 });
+        passwordField = await page.waitForSelector('input[type="password"]', { timeout: 20000 });
       } catch (error) {
-        // If password field not found, check if we're already logged in
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait a bit
+        // Try alternative selectors
+        passwordField = await page.$('input[name="password"], input[id*="password"], input[placeholder*="password" i]').catch(() => null);
+      }
+      
+      // If password field not found, check if we're already logged in
+      if (!passwordField) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
         const url = page.url();
         if (!url.includes('/login')) {
-          console.log('Already logged in (no password field found, not on login page)');
+          const authTime = ((Date.now() - authStartTime) / 1000).toFixed(2);
+          console.log(`[AUTH] Already logged in (no password field found, not on login page) (took ${authTime}s)`);
           return true;
         }
-        // Check page content to see if it's a login page
-        const hasPasswordField = await page.$('input[type="password"]').catch(() => null);
-        if (!hasPasswordField && !url.includes('/login')) {
-          console.log('Already logged in (no password field, redirected away from login)');
-          return true;
-        }
-        console.warn('Password field not found, but still on login page. URL:', url);
+        console.warn('[AUTH] Password field not found, but still on login page. URL:', url);
+        // Try to find password field with different approach
+        const allInputs = await page.$$('input').catch(() => []);
+        console.log(`[AUTH] Found ${allInputs.length} input fields on page`);
         // Continue anyway, might be a different login form
       }
       
       // Fill in password
-      await page.type('input[type="password"]', this.password);
+      if (passwordField) {
+        await passwordField.type(this.password, { delay: 100 });
+      } else {
+        // Try to type password using evaluate
+        await page.evaluate((password) => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const pwdInput = (globalThis as any).document?.querySelector('input[type="password"]');
+          if (pwdInput) {
+            pwdInput.value = password;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            pwdInput.dispatchEvent(new (globalThis as any).Event('input', { bubbles: true }));
+          }
+        }, this.password);
+      }
       
-      // Submit form - try to find and click submit button, otherwise press Enter
+      // Submit form - wait for navigation before clicking to avoid context destruction
+      const navigationPromise = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {
+        // Navigation might not happen
+      });
+      
+      // Try to submit form
       let submitted = false;
       
       // Try input[type="submit"]
-      const submitInput = await page.$('input[type="submit"]').catch(() => null);
-      if (submitInput) {
-        await submitInput.click();
-        submitted = true;
+      try {
+        const submitInput = await page.$('input[type="submit"]');
+        if (submitInput) {
+          await Promise.all([
+            navigationPromise,
+            submitInput.click(),
+          ]);
+          submitted = true;
+        }
+      } catch (e) {
+        // Ignore
       }
       
       // Try button[type="submit"]
       if (!submitted) {
-        const submitButton = await page.$('button[type="submit"]').catch(() => null);
-        if (submitButton) {
-          await submitButton.click();
-          submitted = true;
+        try {
+          const submitButton = await page.$('button[type="submit"]');
+          if (submitButton) {
+            await Promise.all([
+              navigationPromise,
+              submitButton.click(),
+            ]);
+            submitted = true;
+          }
+        } catch (e) {
+          // Ignore
         }
       }
       
-      // Try any button that might be a submit button
+      // Try pressing Enter on password field
       if (!submitted) {
-        const anyButton = await page.$('form button, button').catch(() => null);
-        if (anyButton) {
-          await anyButton.click();
+        try {
+          await Promise.all([
+            navigationPromise,
+            page.keyboard.press('Enter'),
+          ]);
           submitted = true;
+        } catch (e) {
+          // Ignore
         }
       }
       
-      // If no button found, press Enter
-      if (!submitted) {
-        await page.keyboard.press('Enter');
-      }
-      
-      // Wait for navigation or dashboard
-      await Promise.race([
-        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 30000 }),
-        new Promise(resolve => setTimeout(resolve, 3000)), // Give it 3 seconds if no navigation
-      ]).catch(() => {
-        // Navigation might not happen, check if we're logged in
-      });
+      // Wait a bit for navigation to complete
+      await new Promise(resolve => setTimeout(resolve, 3000));
       
       // Check if login was successful by looking for login page elements or dashboard
       const currentUrl = page.url();
@@ -146,15 +188,17 @@ export class SvcElocalCalls {
                         pageContent.includes('calls') ||
                         !pageContent.includes('Log In');
       
+      const authTime = ((Date.now() - authStartTime) / 1000).toFixed(2);
       if (isLoggedIn) {
-        console.log('Authentication successful');
+        console.log(`[AUTH] Authentication successful (took ${authTime}s)`);
         return true;
       } else {
-        console.error('Authentication failed - still on login page');
+        console.error(`[AUTH] Authentication failed - still on login page (took ${authTime}s). Current URL: ${currentUrl}`);
         return false;
       }
     } catch (error: any) {
-      console.error('Error during authentication:', error.message);
+      const authTime = ((Date.now() - authStartTime) / 1000).toFixed(2);
+      console.error(`[AUTH] Error during authentication (took ${authTime}s):`, error.message);
       return false;
     }
   }
@@ -163,11 +207,16 @@ export class SvcElocalCalls {
    * Fetch calls CSV from elocal.com export endpoint using Puppeteer
    */
   async fetchCallsCsv(startDate: string, endDate: string): Promise<string> {
+    const fetchStartTime = Date.now();
     const browser = await this.getBrowser();
     const page = await browser.newPage();
     
     try {
-      console.log(`Fetching calls CSV from elocal.com: start=${startDate}, end=${endDate}`);
+      // Set increased timeouts for network operations
+      await page.setDefaultNavigationTimeout(120000); // 2 minutes
+      await page.setDefaultTimeout(120000); // 2 minutes
+      
+      console.log(`[FETCH] Fetching calls CSV from elocal.com: start=${startDate}, end=${endDate}`);
       
       // First, authenticate
       const authenticated = await this.authenticate(page);
@@ -180,8 +229,9 @@ export class SvcElocalCalls {
       
       // Get export URL
       const exportUrl = `https://www.elocal.com/business_users/calls/export/${ELOCAL_BUSINESS_ID}?start=${startDate}&end=${endDate}`;
-      console.log(`Fetching CSV from export URL: ${exportUrl}`);
+      console.log(`[FETCH] Fetching CSV from export URL: ${exportUrl}`);
       
+      const csvFetchStartTime = Date.now();
       // Use page.evaluate to fetch CSV using browser's fetch API (with cookies)
       const csvContent = await page.evaluate(async (url: string) => {
         try {
@@ -206,6 +256,7 @@ export class SvcElocalCalls {
           throw new Error(`Failed to fetch CSV: ${error.message}`);
         }
       }, exportUrl);
+      const csvFetchTime = ((Date.now() - csvFetchStartTime) / 1000).toFixed(2);
 
       // Check if we got HTML login page instead of CSV
       if (csvContent.includes('Log In') || csvContent.includes('Business User Log In') || csvContent.trim().startsWith('<!DOCTYPE')) {
@@ -216,7 +267,19 @@ export class SvcElocalCalls {
         throw new Error('Received empty CSV response');
       }
       
-      console.log(`Received CSV content (${csvContent.length} characters)`);
+      // Calculate CSV statistics
+      const csvBytes = csvContent.length;
+      const csvLines = csvContent.split('\n').length;
+      const csvSizeKB = (csvBytes / 1024).toFixed(2);
+      
+      // Log first few lines of CSV for format verification
+      const csvLinesArray = csvContent.split('\n');
+      const previewLines = csvLinesArray.slice(0, 3).join('\n');
+      
+      const fetchTime = ((Date.now() - fetchStartTime) / 1000).toFixed(2);
+      console.log(`[FETCH] Received CSV: ${csvBytes} bytes (${csvSizeKB} KB), ~${csvLines} lines (took ${csvFetchTime}s, total ${fetchTime}s)`);
+      console.log(`[FETCH] CSV preview (first 3 lines):\n${previewLines}`);
+      
       return csvContent;
     } catch (error: any) {
       console.error('Error fetching calls CSV:', {
@@ -234,17 +297,23 @@ export class SvcElocalCalls {
    */
   parseCallsCsv(csvContent: string): ElocalCall[] {
     if (!csvContent || csvContent.trim().length === 0) {
+      console.log(`[PARSE] Empty CSV content, returning empty array`);
       return [];
     }
 
     try {
+      const parseStartTime = Date.now();
+      console.log(`[PARSE] Starting CSV parsing...`);
+      
       const records = parse(csvContent, {
         columns: true,
         skip_empty_lines: true,
         trim: true,
       });
 
+      console.log(`[PARSE] CSV parsed into ${records.length} raw records`);
       const calls: ElocalCall[] = [];
+      const skippedReasons: { [key: string]: number } = {};
 
       for (const record of records) {
         // Map CSV columns to our call structure based on actual elocal.com CSV format
@@ -264,7 +333,11 @@ export class SvcElocalCalls {
                         record['Call Type'] || record['CallType'] || record['call-type'] || null;
 
         if (!callId || !callDate) {
-          console.warn('Skipping call record missing required fields:', record);
+          const reason = !callId ? 'missing call_id' : 'missing date';
+          skippedReasons[reason] = (skippedReasons[reason] || 0) + 1;
+          if (calls.length < 3) {
+            console.warn(`[PARSE] Skipping call record (${reason}):`, JSON.stringify(record).substring(0, 200));
+          }
           continue;
         }
 
@@ -313,10 +386,26 @@ export class SvcElocalCalls {
         });
       }
 
-      console.log(`Parsed ${calls.length} calls from CSV`);
+      const parseTime = ((Date.now() - parseStartTime) / 1000).toFixed(2);
+      const skippedCount = records.length - calls.length;
+      const skippedSummary = Object.keys(skippedReasons).length > 0 
+        ? ` (${skippedCount} skipped: ${Object.entries(skippedReasons).map(([reason, count]) => `${count} ${reason}`).join(', ')})`
+        : '';
+      
+      console.log(`[PARSE] Parsed ${calls.length} calls from ${records.length} CSV rows${skippedSummary} (took ${parseTime}s)`);
+      
+      // Log sample parsed calls
+      if (calls.length > 0) {
+        const sampleCalls = calls.slice(0, 3);
+        console.log(`[PARSE] Sample parsed calls (first ${sampleCalls.length}):`);
+        sampleCalls.forEach((call, idx) => {
+          console.log(`[PARSE]   ${idx + 1}. call_id=${call.call_id}, date=${call.date}, duration=${call.duration || 'N/A'}, type=${call.call_type || 'N/A'}`);
+        });
+      }
+      
       return calls;
     } catch (error) {
-      console.error('Error parsing CSV:', error);
+      console.error('[PARSE] Error parsing CSV:', error);
       throw error;
     }
   }
@@ -326,8 +415,9 @@ export class SvcElocalCalls {
    * Uses ON CONFLICT DO UPDATE to ensure idempotent syncs - can run hourly without duplicates
    */
   async saveCalls(calls: ElocalCall[]): Promise<void> {
+    const saveStartTime = Date.now();
     if (calls.length === 0) {
-      console.log('No calls to save');
+      console.log('[SAVE] No calls to save');
       return;
     }
 
@@ -335,21 +425,31 @@ export class SvcElocalCalls {
     
     try {
       await client.query('BEGIN');
+      console.log(`[SAVE] Starting to save ${calls.length} calls to database...`);
 
       let savedCount = 0;
       let skippedCount = 0;
       const errors: Array<{ callId: string; error: string }> = [];
+      const totalCalls = calls.length;
+      const progressInterval = Math.max(1, Math.floor(totalCalls / 10)); // Log every 10%
 
-      for (const call of calls) {
+      for (let i = 0; i < calls.length; i++) {
+        const call = calls[i];
         try {
           if (!call.call_id || !call.date) {
-            console.warn('Skipping call missing required fields:', call);
+            console.warn(`[SAVE] Skipping call missing required fields: call_id=${call.call_id}, date=${call.date}`);
             skippedCount++;
             continue;
           }
 
           if (savedCount < 3) {
-            console.log(`Saving call: id=${call.call_id}, date=${call.date}, duration=${call.duration}`);
+            console.log(`[SAVE] Saving call: id=${call.call_id}, date=${call.date}, duration=${call.duration || 'N/A'}`);
+          }
+          
+          // Log progress every 10% or every 100 records
+          if ((i + 1) % progressInterval === 0 || (i + 1) % 100 === 0) {
+            const progress = ((i + 1) / totalCalls * 100).toFixed(0);
+            console.log(`[SAVE] Progress: ${i + 1}/${totalCalls} processed (${progress}%), ${savedCount} saved, ${skippedCount} skipped`);
           }
 
           // Upsert call record using call_id as unique key
@@ -376,7 +476,22 @@ export class SvcElocalCalls {
 
           savedCount++;
         } catch (dbError: any) {
-          console.error(`Error saving call ${call.call_id}:`, dbError.message);
+          // Log first 5 errors in detail
+          if (errors.length < 5) {
+            console.error(`[SAVE] Error saving call ${call.call_id}:`, {
+              callId: call.call_id,
+              error: dbError.message,
+              code: dbError.code,
+              detail: dbError.detail,
+              hint: dbError.hint,
+              callData: {
+                date: call.date,
+                duration: call.duration,
+                call_type: call.call_type,
+                source: call.source,
+              }
+            });
+          }
           errors.push({ callId: call.call_id, error: dbError.message });
           skippedCount++;
         }
@@ -384,13 +499,18 @@ export class SvcElocalCalls {
 
       await client.query('COMMIT');
       
-      console.log(`Calls save summary: ${savedCount} saved, ${skippedCount} skipped`);
+      const saveTime = ((Date.now() - saveStartTime) / 1000).toFixed(2);
+      console.log(`[SAVE] Calls save summary: ${savedCount} saved, ${skippedCount} skipped (took ${saveTime}s)`);
       if (errors.length > 0) {
-        console.warn(`Errors encountered:`, errors.slice(0, 10));
+        console.warn(`[SAVE] Errors encountered (${errors.length} total):`, errors.slice(0, 10));
+        if (errors.length > 10) {
+          console.warn(`[SAVE] ... and ${errors.length - 10} more errors`);
+        }
       }
     } catch (error) {
       await client.query('ROLLBACK');
-      console.error('Error saving elocal calls:', error);
+      const saveTime = ((Date.now() - saveStartTime) / 1000).toFixed(2);
+      console.error(`[SAVE] Error saving elocal calls (took ${saveTime}s):`, error);
       throw error;
     } finally {
       client.release();
@@ -401,6 +521,7 @@ export class SvcElocalCalls {
    * Sync calls (fetch, parse, and save)
    */
   async syncCalls(): Promise<void> {
+    const startTime = Date.now();
     try {
       // Calculate date range: last 30 days, excluding today
       const yesterday = new Date();
@@ -411,25 +532,44 @@ export class SvcElocalCalls {
       startDateObj.setDate(startDateObj.getDate() - 29); // 30 days total (including yesterday)
       const startDate = startDateObj.toISOString().split('T')[0];
 
-      console.log(`Syncing elocal calls: start=${startDate}, end=${endDate}`);
+      console.log(`[START] Elocal calls sync: start=${startDate}, end=${endDate}`);
 
-      // Fetch CSV using Puppeteer
+      // Step 1: Fetch CSV using Puppeteer
+      const fetchStartTime = Date.now();
+      console.log(`[STEP 1] Fetching CSV from elocal.com...`);
       const csvContent = await this.fetchCallsCsv(startDate, endDate);
+      const fetchTime = ((Date.now() - fetchStartTime) / 1000).toFixed(2);
       
       if (!csvContent || csvContent.trim().length === 0) {
-        console.log('No CSV content received, skipping save');
+        console.log(`[STEP 1] No CSV content received, skipping save (took ${fetchTime}s)`);
+        return;
+      }
+      console.log(`[STEP 1] CSV fetched successfully (took ${fetchTime}s)`);
+
+      // Step 2: Parse CSV
+      const parseStartTime = Date.now();
+      console.log(`[STEP 2] Parsing CSV content...`);
+      const calls = this.parseCallsCsv(csvContent);
+      const parseTime = ((Date.now() - parseStartTime) / 1000).toFixed(2);
+      console.log(`[STEP 2] CSV parsed: ${calls.length} calls extracted (took ${parseTime}s)`);
+      
+      if (calls.length === 0) {
+        console.log(`[WARNING] No calls to save after parsing`);
         return;
       }
 
-      // Parse CSV
-      const calls = this.parseCallsCsv(csvContent);
-      
-      // Save to database
+      // Step 3: Save to database
+      const saveStartTime = Date.now();
+      console.log(`[STEP 3] Saving ${calls.length} calls to database...`);
       await this.saveCalls(calls);
+      const saveTime = ((Date.now() - saveStartTime) / 1000).toFixed(2);
+      console.log(`[STEP 3] Calls saved to database (took ${saveTime}s)`);
       
-      console.log('Elocal calls sync completed successfully');
+      const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
+      console.log(`[SUCCESS] Elocal calls sync completed: ${calls.length} calls processed in ${totalTime}s total`);
     } catch (error) {
-      console.error('Error syncing elocal calls:', error);
+      const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
+      console.error(`[ERROR] Elocal calls sync failed after ${totalTime}s:`, error);
       throw error;
     }
   }

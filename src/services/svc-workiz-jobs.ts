@@ -67,16 +67,21 @@ export class SvcWorkizJobs {
   }
 
   /**
-   * Get source_id from dim_source by code
+   * Get source_id from dim_source by code, create if not exists
    */
-  private async getSourceId(sourceCode: string): Promise<number | null> {
+  private async getSourceId(sourceCode: string): Promise<number> {
     const client = await pool.connect();
     try {
+      if (!sourceCode || sourceCode.trim() === '') {
+        sourceCode = 'workiz';
+      }
+
       const normalizedCode = sourceCode.toLowerCase()
         .replace(/\s+/g, '_')
         .replace(/[^a-z0-9_]/g, '');
 
-      const result = await client.query(
+      // Try to find by normalized code
+      let result = await client.query(
         'SELECT id FROM dim_source WHERE code = $1',
         [normalizedCode]
       );
@@ -85,21 +90,21 @@ export class SvcWorkizJobs {
         return result.rows[0].id;
       }
 
-      const resultByName = await client.query(
-        'SELECT id FROM dim_source WHERE LOWER(name) = LOWER($1)',
-        [sourceCode]
+      // Source not found - create it automatically
+      console.log(`Creating new source in dim_source: code='${normalizedCode}', name='${sourceCode}'`);
+      const insertResult = await client.query(
+        `INSERT INTO dim_source (code, name) 
+         VALUES ($1, $2) 
+         ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name
+         RETURNING id`,
+        [normalizedCode, sourceCode]
       );
 
-      if (resultByName.rows.length > 0) {
-        return resultByName.rows[0].id;
+      if (insertResult.rows.length > 0) {
+        return insertResult.rows[0].id;
       }
 
-      const defaultResult = await client.query(
-        'SELECT id FROM dim_source WHERE code = $1',
-        ['workiz']
-      );
-
-      return defaultResult.rows[0]?.id || null;
+      throw new Error(`Failed to create source '${sourceCode}' in dim_source table.`);
     } finally {
       client.release();
     }
@@ -182,70 +187,187 @@ export class SvcWorkizJobs {
 
   /**
    * Fetch jobs from Workiz API with pagination
+   * Workiz API endpoint: /job/all/
+   * Parameters: start_date (required), offset (default 0), records (default 100, max 100), only_open (default true)
+   * Note: end_date is NOT supported by Workiz API - it uses start_date until today
    */
   async fetchJobs(startDate: string, endDate?: string, onlyOpen: boolean = false): Promise<WorkizJob[]> {
     const allJobs: WorkizJob[] = [];
     let offset = 0;
     const recordsPerPage = 100;
     let hasMore = true;
+    let pageNumber = 0;
+    let consecutiveErrors = 0;
+    const maxConsecutiveErrors = 3;
 
-    try {
-      console.log(`Fetching jobs from Workiz API: start_date=${startDate}, end_date=${endDate || 'today'}, only_open=${onlyOpen}`);
+    // Workiz API doesn't support end_date - it uses start_date until today
+    // endDate parameter is kept for backward compatibility but ignored
+    if (endDate) {
+      console.log(`Warning: end_date parameter (${endDate}) is ignored - Workiz API uses start_date until today`);
+    }
+    
+    console.log(`[PAGINATION] Starting jobs fetch: start_date=${startDate}, only_open=${onlyOpen}, records_per_page=${recordsPerPage}`);
 
-      while (hasMore) {
-        const params: any = {
-          start_date: startDate,
-          offset: offset,
-          records: recordsPerPage,
-          only_open: onlyOpen,
-        };
-
-        console.log(`Fetching jobs page: offset=${offset}, records=${recordsPerPage}`);
-
-        const response = await axios.get(`${this.apiBasePath}/job/all/`, { params });
-
-        let jobsData: WorkizJobRaw[] = [];
-        if (Array.isArray(response.data)) {
-          jobsData = response.data;
-        } else if (response.data?.data && Array.isArray(response.data.data)) {
-          jobsData = response.data.data;
-        } else if (response.data?.jobs && Array.isArray(response.data.jobs)) {
-          jobsData = response.data.jobs;
-        }
-
-        console.log(`Received ${jobsData.length} jobs in this page`);
-
-        if (offset === 0 && jobsData.length > 0) {
-          console.log('Sample raw job structure from API:', JSON.stringify(jobsData[0], null, 2));
-        }
-
-        const normalizedJobs = jobsData
-          .map((rawJob) => this.normalizeJob(rawJob))
-          .filter((job): job is WorkizJob => job !== null);
-
-        allJobs.push(...normalizedJobs);
-
-        if (jobsData.length < recordsPerPage) {
-          hasMore = false;
-        } else {
-          offset += recordsPerPage;
-          if (offset > 10000) {
-            console.warn('Reached safety limit of 10000 records, stopping pagination');
-            hasMore = false;
-          }
-        }
+    while (hasMore) {
+      pageNumber++;
+      const pageStartTime = Date.now();
+      
+      const params: any = {
+        start_date: startDate,
+        offset: offset,
+        records: recordsPerPage, // Workiz API uses 'records' not 'limit'
+      };
+      
+      if (onlyOpen) {
+        params.only_open = onlyOpen;
       }
 
-      console.log(`Total jobs fetched: ${allJobs.length}`);
-      return allJobs;
-    } catch (error: any) {
-      console.error('Error fetching Workiz jobs:', {
-        message: error.message,
-        response: error.response?.data,
-        status: error.response?.status,
-      });
-      return allJobs;
+      console.log(`[PAGINATION] Page ${pageNumber}: Fetching jobs - offset=${offset}, records=${recordsPerPage}`);
+      console.log(`[PAGINATION] Page ${pageNumber}: Request URL: ${this.apiBasePath}/job/all/`);
+      console.log(`[PAGINATION] Page ${pageNumber}: Request params:`, JSON.stringify(params, null, 2));
+
+      // Workiz API: GET /api/v1/{API_KEY}/job/all/
+      let response;
+      let jobsData: WorkizJobRaw[] = [];
+      
+      try {
+        response = await axios.get(`${this.apiBasePath}/job/all/`, { params });
+        const requestTime = ((Date.now() - pageStartTime) / 1000).toFixed(2);
+        console.log(`[PAGINATION] Page ${pageNumber}: API request completed in ${requestTime}s, status=${response.status}`);
+        
+        // Log response structure for debugging
+        if (pageNumber === 1) {
+          console.log(`[PAGINATION] Page ${pageNumber}: Response structure:`, {
+            isArray: Array.isArray(response.data),
+            hasData: !!response.data?.data,
+            hasJobs: !!response.data?.jobs,
+            keys: response.data ? Object.keys(response.data) : [],
+          });
+        }
+
+        // Parse response data - handle different possible structures
+        if (Array.isArray(response.data)) {
+          jobsData = response.data;
+          console.log(`[PAGINATION] Page ${pageNumber}: Response is direct array`);
+        } else if (response.data?.data && Array.isArray(response.data.data)) {
+          jobsData = response.data.data;
+          console.log(`[PAGINATION] Page ${pageNumber}: Response has data.data array`);
+        } else if (response.data?.jobs && Array.isArray(response.data.jobs)) {
+          jobsData = response.data.jobs;
+          console.log(`[PAGINATION] Page ${pageNumber}: Response has data.jobs array`);
+        } else {
+          console.warn(`[PAGINATION] Page ${pageNumber}: Unexpected response structure:`, {
+            type: typeof response.data,
+            isArray: Array.isArray(response.data),
+            keys: response.data ? Object.keys(response.data) : [],
+            sample: JSON.stringify(response.data).substring(0, 200),
+          });
+        }
+
+        console.log(`[PAGINATION] Page ${pageNumber}: Received ${jobsData.length} jobs from API`);
+
+        // Reset error counter on successful request
+        consecutiveErrors = 0;
+
+      } catch (axiosError: any) {
+        consecutiveErrors++;
+        const requestTime = ((Date.now() - pageStartTime) / 1000).toFixed(2);
+        
+        // Enhanced error logging
+        console.error(`[PAGINATION] Page ${pageNumber}: API request failed after ${requestTime}s:`, {
+          url: `${this.apiBasePath}/job/all/`,
+          params: params,
+          status: axiosError.response?.status,
+          statusText: axiosError.response?.statusText,
+          data: axiosError.response?.data,
+          message: axiosError.message,
+          code: axiosError.code,
+          consecutiveErrors: consecutiveErrors,
+        });
+
+        // If we have too many consecutive errors, stop pagination
+        if (consecutiveErrors >= maxConsecutiveErrors) {
+          console.error(`[PAGINATION] Stopping pagination after ${consecutiveErrors} consecutive errors`);
+          hasMore = false;
+          break;
+        }
+
+        // For non-critical errors (like 429 rate limit), wait and retry
+        if (axiosError.response?.status === 429) {
+          const retryAfter = axiosError.response.headers['retry-after'] || 5;
+          console.log(`[PAGINATION] Page ${pageNumber}: Rate limited, waiting ${retryAfter}s before next page`);
+          await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+        }
+
+        // Skip this page and continue to next
+        console.warn(`[PAGINATION] Page ${pageNumber}: Skipping page due to error, continuing to next page`);
+        offset += recordsPerPage;
+        if (offset > 10000) {
+          console.warn('[PAGINATION] Reached safety limit of 10000 records, stopping pagination');
+          hasMore = false;
+        }
+        continue;
+      }
+
+      // Log sample data structure on first page
+      if (pageNumber === 1 && jobsData.length > 0) {
+        console.log(`[PAGINATION] Page ${pageNumber}: Sample raw job structure from API:`, JSON.stringify(jobsData[0], null, 2));
+      }
+
+      // If no jobs returned, this is the last page
+      if (jobsData.length === 0) {
+        console.log(`[PAGINATION] Page ${pageNumber}: No jobs returned from API, stopping pagination`);
+        hasMore = false;
+        break;
+      }
+
+      // Normalize jobs
+      const normalizeStartTime = Date.now();
+      const normalizedJobs = jobsData
+        .map((rawJob) => this.normalizeJob(rawJob))
+        .filter((job): job is WorkizJob => job !== null);
+      const normalizeTime = ((Date.now() - normalizeStartTime) / 1000).toFixed(2);
+
+      console.log(`[PAGINATION] Page ${pageNumber}: Normalized ${normalizedJobs.length} jobs from ${jobsData.length} raw jobs (took ${normalizeTime}s)`);
+      if (normalizedJobs.length < jobsData.length) {
+        console.warn(`[PAGINATION] Page ${pageNumber}: Lost ${jobsData.length - normalizedJobs.length} jobs during normalization`);
+      }
+
+      allJobs.push(...normalizedJobs);
+
+      // Log progress summary
+      const pageTime = ((Date.now() - pageStartTime) / 1000).toFixed(2);
+      console.log(`[PAGINATION] Page ${pageNumber}: Summary - offset=${offset}, received=${jobsData.length}, normalized=${normalizedJobs.length}, total_accumulated=${allJobs.length}, time=${pageTime}s`);
+
+      // Check if we got fewer records than requested (last page)
+      if (jobsData.length < recordsPerPage) {
+        console.log(`[PAGINATION] Page ${pageNumber}: Received ${jobsData.length} < ${recordsPerPage} records, this is the last page`);
+        hasMore = false;
+      } else {
+        // Continue to next page
+        const previousOffset = offset;
+        offset += recordsPerPage;
+        console.log(`[PAGINATION] Page ${pageNumber}: Received full page (${jobsData.length} records), continuing to next page: offset ${previousOffset} -> ${offset}`);
+        
+        if (offset > 10000) {
+          console.warn(`[PAGINATION] Page ${pageNumber}: Reached safety limit of 10000 records, stopping pagination`);
+          hasMore = false;
+        }
+      }
+      
+      // Small delay to avoid rate limiting
+      if (hasMore) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
     }
+
+    console.log(`[PAGINATION] Completed: Total pages=${pageNumber}, total jobs fetched=${allJobs.length}`);
+    if (allJobs.length === 0) {
+      console.warn('[PAGINATION] WARNING: No jobs were fetched from Workiz API. Check API credentials and date range.');
+    } else {
+      console.log(`[PAGINATION] Successfully fetched ${allJobs.length} jobs across ${pageNumber} page(s)`);
+    }
+    return allJobs;
   }
 
   /**
@@ -263,6 +385,12 @@ export class SvcWorkizJobs {
       const errors: Array<{ jobId: string; error: string }> = [];
 
       for (const job of jobs) {
+        // Declare variables outside try block so they're accessible in catch
+        let sourceId: number | undefined;
+        let leadId: string | null = null;
+        let clientId: string | null = null;
+        let scheduledAt: Date | null = null;
+        
         try {
           if (!job.id) {
             console.warn('Skipping job without ID:', JSON.stringify(job));
@@ -274,18 +402,21 @@ export class SvcWorkizJobs {
             console.log(`Saving job: id=${job.id}, date=${job.date}, type=${job.type}, source=${job.source}`);
           }
 
-          // Get source_id from dim_source
-          const sourceId = await this.getSourceId(job.source || 'workiz');
+          // Get source_id from dim_source (will create 'workiz' if needed)
+          try {
+            sourceId = await this.getSourceId(job.source || 'workiz');
+          } catch (error: any) {
+            console.error(`Error getting source_id for job ${job.id}, source='${job.source}':`, error.message);
+            throw error;
+          }
 
           // Extract lead_id from raw_data if available (job might be converted from lead)
-          let leadId: string | null = null;
           if (job.raw_data) {
             const rawData = job.raw_data as any;
             leadId = rawData.LeadId || rawData.lead_id || rawData.LeadUUID || null;
           }
 
           // Extract scheduled_at from JobDateTime
-          let scheduledAt: Date | null = null;
           if (job.raw_data) {
             const rawData = job.raw_data as any;
             const jobDateTime = rawData.JobDateTime;
@@ -294,11 +425,13 @@ export class SvcWorkizJobs {
             }
           }
 
-          // Extract client_id
-          let clientId: number | null = null;
+          // Extract client_id (convert to string if number, as DB column is VARCHAR)
           if (job.raw_data) {
             const rawData = job.raw_data as any;
-            clientId = rawData.ClientId || null;
+            const rawClientId = rawData.ClientId;
+            if (rawClientId !== null && rawClientId !== undefined) {
+              clientId = String(rawClientId);
+            }
           }
 
           const metaJson = job.raw_data ? JSON.stringify(job.raw_data) : null;
@@ -333,6 +466,26 @@ export class SvcWorkizJobs {
 
           savedCount++;
         } catch (dbError: any) {
+          // Log first error in detail to help diagnose issues
+          if (errors.length === 0) {
+            console.error(`First error saving job ${job.id}:`, {
+              jobId: job.id,
+              error: dbError.message,
+              code: dbError.code,
+              detail: dbError.detail,
+              hint: dbError.hint,
+              position: dbError.position,
+              jobData: {
+                id: job.id,
+                date: job.date,
+                type: job.type,
+                source: job.source,
+                clientId: clientId,
+                leadId: leadId,
+                sourceId: sourceId,
+              }
+            });
+          }
           console.error(`Error saving job ${job.id}:`, dbError.message);
           errors.push({ jobId: job.id, error: dbError.message });
           skippedCount++;
@@ -343,7 +496,14 @@ export class SvcWorkizJobs {
       
       console.log(`Jobs save summary: ${savedCount} saved, ${skippedCount} skipped`);
       if (errors.length > 0) {
-        console.warn(`Errors encountered:`, errors.slice(0, 10));
+        console.warn(`Errors encountered (showing first 10):`, errors.slice(0, 10));
+        if (errors.length > 10) {
+          console.warn(`... and ${errors.length - 10} more errors`);
+        }
+      }
+      
+      if (savedCount === 0 && jobs.length > 0) {
+        console.error('ERROR: No jobs were saved despite having jobs to save. Check errors above.');
       }
     } catch (error) {
       await client.query('ROLLBACK');

@@ -4,6 +4,7 @@ import { SvcWorkizLeads } from '../services/svc-workiz-leads';
 import { SvcWorkizJobs } from '../services/svc-workiz-jobs';
 import { SvcWorkizPayments } from '../services/svc-workiz-payments';
 import { SvcElocalCalls } from '../services/svc-elocal-calls';
+import { CsvService } from '../services/csv.service';
 
 const router = Router();
 
@@ -283,6 +284,52 @@ router.get('/api/calls', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching calls:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Elocal calls extraction endpoint (without saving to DB)
+router.get('/api/calls/elocal', async (req: Request, res: Response) => {
+  const svcElocalCalls = new SvcElocalCalls();
+  
+  try {
+    // Parse optional date parameters
+    let startDate: string;
+    let endDate: string;
+    
+    if (req.query.start_date && req.query.end_date) {
+      startDate = req.query.start_date as string;
+      endDate = req.query.end_date as string;
+    } else {
+      // Default: last 30 days (excluding today)
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      endDate = yesterday.toISOString().split('T')[0];
+      
+      const startDateObj = new Date(yesterday);
+      startDateObj.setDate(startDateObj.getDate() - 29);
+      startDate = startDateObj.toISOString().split('T')[0];
+    }
+    
+    // Fetch and parse calls (without saving)
+    const csvContent = await svcElocalCalls.fetchCallsCsv(startDate, endDate);
+    const calls = svcElocalCalls.parseCallsCsv(csvContent);
+    
+    res.json({
+      success: true,
+      start_date: startDate,
+      end_date: endDate,
+      count: calls.length,
+      calls: calls
+    });
+  } catch (error: any) {
+    console.error('Error fetching elocal calls:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: error.stack
+    });
+  } finally {
+    await svcElocalCalls.closeBrowser();
   }
 });
 
@@ -781,6 +828,28 @@ router.post('/api/test/workiz/leads/sync-full', async (req: Request, res: Respon
   }
 });
 
+// Test endpoint: Trigger full payments sync (like scheduler does)
+router.post('/api/test/workiz/payments/sync-full', async (req: Request, res: Response) => {
+  try {
+    const svcWorkizPayments = new SvcWorkizPayments();
+    console.log('Starting full payments sync (last 30 days)...');
+
+    await svcWorkizPayments.syncPayments();
+
+    res.json({
+      success: true,
+      message: 'Full payments sync completed successfully',
+    });
+  } catch (error: any) {
+    console.error('Error in full sync payments:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message,
+      details: error.response?.data || error.stack 
+    });
+  }
+});
+
 // ========== TEST ENDPOINTS FOR ELOCAL CALLS ==========
 
 // Test endpoint: Test authentication only (via CSV fetch with small date range)
@@ -874,53 +943,28 @@ router.get('/api/test/elocal/calls', async (req: Request, res: Response) => {
 });
 
 // Test endpoint: Manual sync calls (authenticate + fetch + save)
+// Always uses last 30 days (excluding today) as per documentation
 router.post('/api/test/elocal/calls/sync', async (req: Request, res: Response) => {
   try {
-    const { start_date, end_date } = req.body;
-    
-    // If dates not provided, use default (last 30 days excluding today)
-    let startDate: string;
-    let endDate: string;
-    
-    if (start_date && end_date) {
-      startDate = start_date;
-      endDate = end_date;
-    } else {
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      endDate = yesterday.toISOString().split('T')[0];
-      
-      const startDateObj = new Date(yesterday);
-      startDateObj.setDate(startDateObj.getDate() - 29);
-      startDate = startDateObj.toISOString().split('T')[0];
-    }
-
     const svcElocalCalls = new SvcElocalCalls();
     
-    console.log(`Manual sync elocal calls: start_date=${startDate}, end_date=${endDate}`);
+    console.log('Manual sync elocal calls: starting full sync (last 30 days)...');
 
-    // Run full sync
+    // Run full sync (syncCalls() calculates last 30 days internally)
     try {
       await svcElocalCalls.syncCalls();
     } finally {
       await svcElocalCalls.closeBrowser();
     }
 
-    // Get count of saved calls
+    // Get count of saved calls from elocals
     const result = await pool.query(
-      `SELECT COUNT(*) as count FROM calls 
-       WHERE source = 'elocals' 
-       AND date >= $1 AND date <= $2`,
-      [startDate, endDate]
+      `SELECT COUNT(*) as count FROM calls WHERE source = 'elocals'`
     );
 
     res.json({
       success: true,
       message: 'Sync completed successfully',
-      date_range: {
-        start: startDate,
-        end: endDate,
-      },
       calls_in_db: parseInt(result.rows[0].count, 10),
     });
   } catch (error: any) {
@@ -929,6 +973,139 @@ router.post('/api/test/elocal/calls/sync', async (req: Request, res: Response) =
       success: false,
       error: error.message,
       details: error.response?.data || error.stack 
+    });
+  }
+});
+
+// Web interface endpoints for viewing database tables
+
+// Get list of all tables with row counts
+router.get('/api/tables', async (req: Request, res: Response) => {
+  try {
+    const result = await pool.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public' 
+      AND table_type = 'BASE TABLE'
+      ORDER BY table_name
+    `);
+
+    const tables = await Promise.all(
+      result.rows.map(async (row) => {
+        try {
+          const countResult = await pool.query(
+            `SELECT COUNT(*) as cnt FROM ${row.table_name}`
+          );
+          return {
+            name: row.table_name,
+            rowCount: parseInt(countResult.rows[0].cnt, 10)
+          };
+        } catch (err: any) {
+          // If table doesn't exist or can't be queried, return 0
+          console.warn(`Error counting rows in ${row.table_name}:`, err.message);
+          return {
+            name: row.table_name,
+            rowCount: 0
+          };
+        }
+      })
+    );
+
+    res.json({ tables });
+  } catch (error: any) {
+    console.error('Error fetching tables list:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      message: error.message 
+    });
+  }
+});
+
+// Get table data with pagination
+router.get('/api/table/:tableName', async (req: Request, res: Response) => {
+  try {
+    const { tableName } = req.params;
+    const page = parseInt(req.query.page as string || '1', 10);
+    const limit = Math.min(parseInt(req.query.limit as string || '100', 10), 1000); // Max 1000 rows per request
+
+    // Validate table name (only letters, numbers, underscores)
+    if (!/^[a-zA-Z0-9_]+$/.test(tableName)) {
+      return res.status(400).json({ 
+        error: 'Invalid table name',
+        message: 'Table name can only contain letters, numbers, and underscores'
+      });
+    }
+
+    // Get total row count
+    const countResult = await pool.query(
+      `SELECT COUNT(*) as cnt FROM ${tableName}`
+    );
+    const totalRows = parseInt(countResult.rows[0].cnt, 10);
+
+    // Get column names
+    const columnsResult = await pool.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_schema = 'public' 
+      AND table_name = $1
+      ORDER BY ordinal_position
+    `, [tableName]);
+
+    const columns = columnsResult.rows.map(row => row.column_name);
+
+    if (columns.length === 0) {
+      return res.status(404).json({ 
+        error: 'Table not found',
+        message: `Table "${tableName}" does not exist or has no columns`
+      });
+    }
+
+    // Calculate offset
+    const offset = (page - 1) * limit;
+
+    // Get data with pagination
+    const dataResult = await pool.query(
+      `SELECT * FROM ${tableName} ORDER BY 1 LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    );
+
+    res.json({
+      tableName,
+      columns,
+      rows: dataResult.rows,
+      totalRows,
+      page,
+      limit,
+      totalPages: Math.ceil(totalRows / limit)
+    });
+  } catch (error: any) {
+    console.error('Error fetching table data:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      message: error.message 
+    });
+  }
+});
+
+// Test endpoint: Process CSV files manually
+router.post('/api/test/csv/process', async (req: Request, res: Response) => {
+  try {
+    console.log('Processing CSV files...');
+    const csvService = new CsvService();
+    
+    await csvService.processCsvFiles();
+    
+    res.json({
+      success: true,
+      message: 'CSV files processed successfully',
+      csvDirectory: process.env.CSV_DIRECTORY || './csv-data',
+    });
+  } catch (error: any) {
+    console.error('Error processing CSV files:', error);
+    res.status(500).json({ 
+      success: false,
+      error: error.message,
+      details: error.stack 
     });
   }
 });

@@ -6,6 +6,33 @@ async function migrate() {
   try {
     await client.query('BEGIN');
 
+    // ========== CLEANUP: DROP ALL VIEWS AND TABLES ==========
+    console.log('Dropping all existing views and tables...');
+    
+    // Drop all views first (they depend on tables)
+    await client.query('DROP VIEW IF EXISTS vw_monthly_metrics CASCADE');
+    await client.query('DROP VIEW IF EXISTS vw_daily_metrics CASCADE');
+    await client.query('DROP VIEW IF EXISTS vw_job_metrics CASCADE');
+    
+    // Drop all tables (CASCADE will handle dependencies)
+    await client.query('DROP TABLE IF EXISTS fact_payments CASCADE');
+    await client.query('DROP TABLE IF EXISTS fact_jobs CASCADE');
+    await client.query('DROP TABLE IF EXISTS fact_leads CASCADE');
+    await client.query('DROP TABLE IF EXISTS payments CASCADE');
+    await client.query('DROP TABLE IF EXISTS jobs CASCADE');
+    await client.query('DROP TABLE IF EXISTS calls CASCADE');
+    await client.query('DROP TABLE IF EXISTS elocals_leads CASCADE');
+    await client.query('DROP TABLE IF EXISTS leads CASCADE');
+    await client.query('DROP TABLE IF EXISTS google_spend CASCADE');
+    await client.query('DROP TABLE IF EXISTS daily_metrics CASCADE');
+    await client.query('DROP TABLE IF EXISTS monthly_metrics CASCADE');
+    await client.query('DROP TABLE IF EXISTS targets CASCADE');
+    await client.query('DROP TABLE IF EXISTS kpi_targets CASCADE');
+    await client.query('DROP TABLE IF EXISTS dim_date CASCADE');
+    await client.query('DROP TABLE IF EXISTS dim_source CASCADE');
+    
+    console.log('All views and tables dropped successfully');
+
     // ========== DIMENSIONS (SPRAVOCHNIKI) ==========
     
     // dim_source - справочник источников
@@ -33,11 +60,25 @@ async function migrate() {
     `);
 
     // dim_date - справочник дат
+    // month_start вычисляется в запросах через date_trunc('month', d)::date
     await client.query(`
       CREATE TABLE IF NOT EXISTS dim_date (
-        d DATE PRIMARY KEY,
-        month_start DATE GENERATED ALWAYS AS (date_trunc('month', d)::date) STORED
+        d DATE PRIMARY KEY
       )
+    `);
+    
+    // Удалить колонку month_start если она существует (миграция с GENERATED ALWAYS AS)
+    await client.query(`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'dim_date' 
+          AND column_name = 'month_start'
+        ) THEN
+          ALTER TABLE dim_date DROP COLUMN month_start;
+        END IF;
+      END $$;
     `);
 
     // Заполнить dim_date датами на год вперед и назад (можно расширить при необходимости)
@@ -56,7 +97,7 @@ async function migrate() {
     // fact_leads - лиды из Workiz
     await client.query(`
       CREATE TABLE IF NOT EXISTS fact_leads (
-        lead_id BIGINT PRIMARY KEY,
+        lead_id VARCHAR(255) PRIMARY KEY,
         created_at TIMESTAMP NOT NULL,
         source_id INTEGER REFERENCES dim_source(id),
         phone_hash TEXT,
@@ -71,13 +112,13 @@ async function migrate() {
     // fact_jobs - работы из Workiz
     await client.query(`
       CREATE TABLE IF NOT EXISTS fact_jobs (
-        job_id BIGINT PRIMARY KEY,
-        lead_id BIGINT REFERENCES fact_leads(lead_id),
+        job_id VARCHAR(255) PRIMARY KEY,
+        lead_id VARCHAR(255) REFERENCES fact_leads(lead_id),
         created_at TIMESTAMP NOT NULL,
         scheduled_at TIMESTAMP,
         source_id INTEGER REFERENCES dim_source(id),
         type TEXT,
-        client_id BIGINT,
+        client_id VARCHAR(255),
         meta JSONB,
         created_at_db TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
         updated_at_db TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
@@ -87,8 +128,8 @@ async function migrate() {
     // fact_payments - платежи из Workiz
     await client.query(`
       CREATE TABLE IF NOT EXISTS fact_payments (
-        payment_id BIGINT PRIMARY KEY,
-        job_id BIGINT REFERENCES fact_jobs(job_id),
+        payment_id VARCHAR(255) PRIMARY KEY,
+        job_id VARCHAR(255) REFERENCES fact_jobs(job_id),
         paid_at TIMESTAMP,
         amount NUMERIC(10,2) NOT NULL,
         method TEXT,
@@ -441,72 +482,6 @@ async function migrate() {
       GROUP BY date_trunc('month', d), source, segment
     `);
     console.log('Created VIEW vw_monthly_metrics');
-
-    // ========== DATA MIGRATION FROM LEGACY TABLES ==========
-    // Migrate leads from old 'leads' table to 'fact_leads'
-    console.log('Migrating data from legacy tables...');
-    
-    await client.query(`
-      INSERT INTO fact_leads (lead_id, created_at, source_id, phone_hash, raw_source, cost, meta)
-      SELECT 
-        l.lead_id,
-        l.created_at,
-        COALESCE(
-          (SELECT id FROM dim_source WHERE code = LOWER(REPLACE(l.source, ' ', '_'))),
-          (SELECT id FROM dim_source WHERE code = 'workiz')
-        ) as source_id,
-        NULL as phone_hash, -- Will be calculated on next sync
-        l.source as raw_source,
-        0 as cost, -- Will be calculated based on source
-        l.raw_payload as meta
-      FROM leads l
-      WHERE NOT EXISTS (
-        SELECT 1 FROM fact_leads fl WHERE fl.lead_id = l.lead_id
-      )
-      ON CONFLICT (lead_id) DO NOTHING
-    `);
-    console.log('Migrated leads to fact_leads');
-
-    // Migrate jobs from old 'jobs' table to 'fact_jobs'
-    await client.query(`
-      INSERT INTO fact_jobs (job_id, lead_id, created_at, scheduled_at, source_id, type, client_id, meta)
-      SELECT 
-        j.job_id,
-        NULL as lead_id, -- Will be linked on next sync if available
-        j.date::timestamp as created_at,
-        j.date::timestamp as scheduled_at,
-        COALESCE(
-          (SELECT id FROM dim_source WHERE code = LOWER(REPLACE(j.source, ' ', '_'))),
-          (SELECT id FROM dim_source WHERE code = 'workiz')
-        ) as source_id,
-        j.type,
-        NULL as client_id, -- Will be extracted from meta on next sync
-        j.raw_data as meta
-      FROM jobs j
-      WHERE NOT EXISTS (
-        SELECT 1 FROM fact_jobs fj WHERE fj.job_id = j.job_id
-      )
-      ON CONFLICT (job_id) DO NOTHING
-    `);
-    console.log('Migrated jobs to fact_jobs');
-
-    // Migrate payments from old 'payments' table to 'fact_payments'
-    await client.query(`
-      INSERT INTO fact_payments (payment_id, job_id, paid_at, amount, method, meta)
-      SELECT 
-        p.payment_id,
-        p.job_id,
-        p.date::timestamp as paid_at,
-        p.amount,
-        p.payment_type as method,
-        NULL as meta
-      FROM payments p
-      WHERE NOT EXISTS (
-        SELECT 1 FROM fact_payments fp WHERE fp.payment_id = p.payment_id
-      )
-      ON CONFLICT (payment_id) DO NOTHING
-    `);
-    console.log('Migrated payments to fact_payments');
 
     await client.query('COMMIT');
     console.log('Migration completed successfully');
