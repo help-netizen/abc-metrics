@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ABC Metrics - Database Tables</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📊 ABC Metrics Database</h1>
+            <p>Выберите таблицу для просмотра данных</p>
+            <nav style="margin-top: 20px;">
+                <a href="/import-jobs.html" style="background: #4CAF50; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block;">
+                    📥 Импорт работ из CSV
+                </a>
+            </nav>
+        </header>
+        
+        <div id="loading" class="loading">Загрузка таблиц...</div>
+        <div id="error" class="error" style="display: none;"></div>
+        
+        <div id="tables-list" class="tables-list" style="display: none;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Таблица</th>
+                        <th>Количество строк</th>
+                    </tr>
+                </thead>
+                <tbody id="tables-tbody">
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <script src="/app.js"></script>
+</body>
+</html>
+
+
+

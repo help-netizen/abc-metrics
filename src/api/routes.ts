@@ -1,12 +1,503 @@
 import { Router, Request, Response } from 'express';
+import multer from 'multer';
 import pool from '../db/connection';
 import { SvcWorkizLeads } from '../services/svc-workiz-leads';
 import { SvcWorkizJobs } from '../services/svc-workiz-jobs';
 import { SvcWorkizPayments } from '../services/svc-workiz-payments';
 import { SvcElocalCalls } from '../services/svc-elocal-calls';
 import { CsvService } from '../services/csv.service';
+import dbRoutes from './db-routes';
+import { parse } from 'csv-parse/sync';
 
 const router = Router();
+
+// ============================================================================
+// PUBLIC WEB INTERFACE ENDPOINTS (no authentication required)
+// ============================================================================
+// These endpoints must be defined BEFORE dbRoutes to avoid authentication middleware
+
+// Get list of all tables with row counts
+router.get('/api/tables', async (req: Request, res: Response) => {
+  try {
+    const result = await pool.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public' 
+      AND table_type = 'BASE TABLE'
+      ORDER BY table_name
+    `);
+
+    const tables = await Promise.all(
+      result.rows.map(async (row) => {
+        try {
+          const countResult = await pool.query(
+            `SELECT COUNT(*) as cnt FROM ${row.table_name}`
+          );
+          return {
+            name: row.table_name,
+            rowCount: parseInt(countResult.rows[0].cnt, 10)
+          };
+        } catch (err: any) {
+          // If table doesn't exist or can't be queried, return 0
+          console.warn(`Error counting rows in ${row.table_name}:`, err.message);
+          return {
+            name: row.table_name,
+            rowCount: 0
+          };
+        }
+      })
+    );
+
+    res.json({ tables });
+  } catch (error: any) {
+    console.error('Error fetching tables list:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      message: error.message 
+    });
+  }
+});
+
+// Get table data with pagination
+router.get('/api/table/:tableName', async (req: Request, res: Response) => {
+  try {
+    const { tableName } = req.params;
+    const page = parseInt(req.query.page as string || '1', 10);
+    const limit = Math.min(parseInt(req.query.limit as string || '100', 10), 1000); // Max 1000 rows per request
+
+    // Validate table name (only letters, numbers, underscores)
+    if (!/^[a-zA-Z0-9_]+$/.test(tableName)) {
+      return res.status(400).json({ 
+        error: 'Invalid table name',
+        message: 'Table name can only contain letters, numbers, and underscores'
+      });
+    }
+
+    // Get total row count
+    const countResult = await pool.query(
+      `SELECT COUNT(*) as cnt FROM ${tableName}`
+    );
+    const totalRows = parseInt(countResult.rows[0].cnt, 10);
+
+    // Get column names
+    const columnsResult = await pool.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_schema = 'public' 
+      AND table_name = $1
+      ORDER BY ordinal_position
+    `, [tableName]);
+
+    let columns = columnsResult.rows.map(row => row.column_name);
+
+    // For fact_jobs, customize column order and visibility
+    if (tableName === 'fact_jobs') {
+      // Exclude created_at and scheduled_at from display
+      columns = columns.filter(col => col !== 'created_at' && col !== 'scheduled_at');
+      
+      // Define columns that should be at the end
+      const endColumns = ['meta', 'lead_id', 'source_id', 'created_at_db', 'updated_at_db'];
+      
+      // Separate columns into regular and end columns
+      let regularColumns = columns.filter(col => !endColumns.includes(col));
+      const endColumnsFiltered = endColumns.filter(col => columns.includes(col));
+      
+      // Reorder: put Status immediately after Type
+      const typeIndex = regularColumns.findIndex(col => col.toLowerCase() === 'type');
+      const statusIndex = regularColumns.findIndex(col => col.toLowerCase() === 'status');
+      
+      if (typeIndex !== -1 && statusIndex !== -1 && statusIndex !== typeIndex + 1) {
+        // Get the status column name
+        const statusColumn = regularColumns[statusIndex];
+        // Remove status from its current position
+        regularColumns = regularColumns.filter((_, idx) => idx !== statusIndex);
+        // Insert status right after type
+        regularColumns.splice(typeIndex + 1, 0, statusColumn);
+      }
+      
+      // Reorder: regular columns first, then end columns
+      columns = [...regularColumns, ...endColumnsFiltered];
+    }
+
+    if (columns.length === 0) {
+      return res.status(404).json({ 
+        error: 'Table not found',
+        message: `Table "${tableName}" does not exist or has no columns`
+      });
+    }
+
+    // Calculate offset
+    const offset = (page - 1) * limit;
+
+    // Build SELECT query with explicit column list
+    const selectColumns = columns.join(', ');
+    
+    // Special ORDER BY for fact_jobs
+    let orderBy = '1';
+    if (tableName === 'fact_jobs') {
+      orderBy = 'COALESCE(job_end_date_time, last_status_update, created_at_db) DESC';
+    }
+
+    // Get data with pagination
+    const dataResult = await pool.query(
+      `SELECT ${selectColumns} FROM ${tableName} ORDER BY ${orderBy} LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    );
+
+    res.json({
+      tableName,
+      columns,
+      rows: dataResult.rows,
+      totalRows,
+      page,
+      limit,
+      totalPages: Math.ceil(totalRows / limit)
+    });
+  } catch (error: any) {
+    console.error('Error fetching table data:', error);
+    res.status(500).json({ 
+      error: 'Internal server error',
+      message: error.message 
+    });
+  }
+});
+
+// ============================================================================
+// CSV IMPORT ENDPOINT (public, no authentication required)
+// ============================================================================
+
+// Configure multer for file uploads
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'text/csv' || file.originalname.endsWith('.csv')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only CSV files are allowed'));
+    }
+  },
+});
+
+/**
+ * Get source_id from dim_source by code, create if not exists
+ */
+async function getSourceId(sourceCode: string): Promise<number> {
+  const client = await pool.connect();
+  try {
+    if (!sourceCode || sourceCode.trim() === '') {
+      sourceCode = 'workiz';
+    }
+
+    const normalizedCode = sourceCode.toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/[^a-z0-9_]/g, '');
+
+    // Try to find by normalized code
+    let result = await client.query(
+      'SELECT id FROM dim_source WHERE code = $1',
+      [normalizedCode]
+    );
+
+    if (result.rows.length > 0) {
+      return result.rows[0].id;
+    }
+
+    // Source not found - create it automatically
+    console.log(`Creating new source in dim_source: code='${normalizedCode}', name='${sourceCode}'`);
+    const insertResult = await client.query(
+      `INSERT INTO dim_source (code, name) 
+       VALUES ($1, $2) 
+       ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name
+       RETURNING id`,
+      [normalizedCode, sourceCode]
+    );
+
+    if (insertResult.rows.length > 0) {
+      return insertResult.rows[0].id;
+    }
+
+    throw new Error(`Failed to create source '${sourceCode}' in dim_source table.`);
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Parse date string from CSV format
+ */
+function parseDate(dateStr: string | undefined): Date | null {
+  if (!dateStr || dateStr.trim() === '') {
+    return null;
+  }
+
+  try {
+    const date = new Date(dateStr.trim());
+    if (!isNaN(date.getTime())) {
+      return date;
+    }
+  } catch (error) {
+    // Silently fail
+  }
+
+  return null;
+}
+
+/**
+ * Parse numeric value from string
+ */
+function parseNumeric(value: string | undefined): number | null {
+  if (!value || value.trim() === '') {
+    return null;
+  }
+  const parsed = parseFloat(value);
+  return isNaN(parsed) ? null : parsed;
+}
+
+/**
+ * Parse integer value from string
+ */
+function parseIntValue(value: string | undefined): number | null {
+  if (!value || value.trim() === '') {
+    return null;
+  }
+  const parsed = parseInt(value, 10);
+  return isNaN(parsed) ? null : parsed;
+}
+
+/**
+ * Send progress update to client
+ */
+function sendProgress(res: Response, percent: number, message: string) {
+  res.write(JSON.stringify({ progress: percent, message }) + '\n');
+}
+
+/**
+ * Import CSV jobs endpoint
+ */
+router.post('/api/import/jobs-csv', upload.single('csv'), async (req: Request, res: Response) => {
+  if (!req.file) {
+    return res.status(400).json({
+      success: false,
+      message: 'CSV file is required'
+    });
+  }
+
+  // Set headers for streaming response
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Transfer-Encoding', 'chunked');
+
+  try {
+    sendProgress(res, 5, 'Парсинг CSV файла...');
+
+    // Parse CSV file
+    const fileContent = req.file.buffer.toString('utf-8');
+    const records = parse(fileContent, {
+      columns: true,
+      skip_empty_lines: true,
+      relax_column_count: true,
+    });
+
+    sendProgress(res, 10, `Найдено ${records.length} записей. Начинаю импорт...`);
+
+    if (records.length === 0) {
+      res.write(JSON.stringify({
+        result: {
+          success: false,
+          message: 'CSV файл пуст или не содержит данных'
+        }
+      }) + '\n');
+      return res.end();
+    }
+
+    const client = await pool.connect();
+
+    try {
+      await client.query('BEGIN');
+
+      let savedCount = 0;
+      let skippedCount = 0;
+      const errors: Array<{ uuid: string; error: string }> = [];
+
+      for (let i = 0; i < records.length; i++) {
+        const record = records[i];
+        
+        try {
+          // UUID is required (it's the primary key)
+          const uuid = record.UUID?.trim();
+          if (!uuid || uuid === '') {
+            skippedCount++;
+            continue;
+          }
+
+          // Get source_id
+          const sourceCode = record.Source?.trim() || 'workiz';
+          let sourceId: number;
+          try {
+            sourceId = await getSourceId(sourceCode);
+          } catch (error: any) {
+            throw new Error(`Error getting source_id: ${error.message}`);
+          }
+
+          // Parse dates
+          const createdDate = parseDate(record.Created || record['Job Date']);
+          const scheduledDate = parseDate(record['Job Date']);
+          const jobEndDate = parseDate(record['Job End']);
+          const lastStatusUpdate = parseDate(record['Conversion Date']);
+
+          // Parse numeric values
+          const serialId = parseIntValue(record['Job #']);
+          const jobAmountDue = parseNumeric(record['Amount Due']);
+          const jobTotalPrice = parseNumeric(record.Total);
+          const technicianName = record.Tech?.trim() || null;
+          const jobType = record['Job Type']?.trim() || null;
+          const clientId = record['Job #']?.trim() || null;
+
+          // Build meta JSONB object with all additional data
+          const meta: any = {
+            client: record.Client?.trim() || null,
+            tags: record.Tags?.trim() || null,
+            primaryPhone: record['Primary Phone']?.trim() || null,
+            emailAddress: record['Email Address']?.trim() || null,
+            status: record.Status?.trim() || null,
+            subStatus: record['Sub-Status']?.trim() || null,
+            address: record.Address?.trim() || null,
+            city: record.City?.trim() || null,
+            zipCode: record['Zip Code']?.trim() || null,
+            state: record.State?.trim() || null,
+            serviceArea: record['Service Area']?.trim() || null,
+            converted: record.Converted?.trim() || null,
+            invoiced: record.Invoiced?.trim() || null,
+            paymentDueDate: record['Payment Due Date']?.trim() || null,
+            createdBy: record['Created By']?.trim() || null,
+            amountPaid: parseNumeric(record['Amount Paid']),
+            cost: parseNumeric(record.Cost),
+            profit: parseNumeric(record.Profit),
+            profitMargin: parseNumeric(record['Profit Margin']),
+            company: record.Company?.trim() || null,
+            tax: parseNumeric(record.Tax),
+            creditCardServiceFee: parseNumeric(record['Credit Card Service Fee']),
+            taxableAmount: parseNumeric(record['Taxable Amount']),
+            taxRate: parseNumeric(record['Tax Rate']),
+            hours: parseNumeric(record.Hours),
+            firstName: record['First Name']?.trim() || null,
+            lastName: record['Last Name']?.trim() || null,
+            paymentMethods: record['Payment Methods']?.trim() || null,
+            claimIdAndImportantNotes: record['Claim ID and Important notes']?.trim() || null,
+            applianceTypeAndBrand: record['Appliance type and Brand']?.trim() || null,
+            issueDescription: record['Issue description']?.trim() || null,
+            expenses: parseNumeric(record.Expenses),
+            firstTimeNotice: record['First time notice']?.trim() || null,
+          };
+
+          // Remove null values from meta to keep it clean
+          Object.keys(meta).forEach(key => {
+            if (meta[key] === null || meta[key] === undefined) {
+              delete meta[key];
+            }
+          });
+
+          const createdAt = createdDate || new Date();
+
+          // Insert or update job in fact_jobs
+          await client.query(
+            `INSERT INTO fact_jobs (
+              job_id, lead_id, created_at, scheduled_at, source_id, type, client_id,
+              serial_id, technician_name, job_amount_due, job_total_price,
+              job_end_date_time, last_status_update, meta
+            )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+             ON CONFLICT (job_id) 
+             DO UPDATE SET 
+               lead_id = EXCLUDED.lead_id,
+               created_at = EXCLUDED.created_at,
+               scheduled_at = EXCLUDED.scheduled_at,
+               source_id = EXCLUDED.source_id,
+               type = EXCLUDED.type,
+               client_id = EXCLUDED.client_id,
+               serial_id = EXCLUDED.serial_id,
+               technician_name = EXCLUDED.technician_name,
+               job_amount_due = EXCLUDED.job_amount_due,
+               job_total_price = EXCLUDED.job_total_price,
+               job_end_date_time = EXCLUDED.job_end_date_time,
+               last_status_update = EXCLUDED.last_status_update,
+               meta = EXCLUDED.meta,
+               updated_at_db = CURRENT_TIMESTAMP`,
+            [
+              uuid,
+              null,
+              createdAt,
+              scheduledDate,
+              sourceId,
+              jobType,
+              clientId,
+              serialId,
+              technicianName,
+              jobAmountDue,
+              jobTotalPrice,
+              jobEndDate,
+              lastStatusUpdate,
+              JSON.stringify(meta),
+            ]
+          );
+
+          savedCount++;
+          
+          // Send progress update every 100 records
+          if (savedCount % 100 === 0 || i === records.length - 1) {
+            const percent = Math.round(10 + ((i + 1) / records.length) * 85);
+            sendProgress(res, percent, `Импортировано ${savedCount} из ${records.length} записей...`);
+          }
+        } catch (error: any) {
+          const uuid = record.UUID?.trim() || `record_${i + 1}`;
+          console.error(`Error importing job ${uuid}:`, error.message);
+          errors.push({ uuid, error: error.message });
+          skippedCount++;
+        }
+      }
+
+      await client.query('COMMIT');
+
+      sendProgress(res, 100, 'Импорт завершен!');
+
+      res.write(JSON.stringify({
+        result: {
+          success: true,
+          total: records.length,
+          imported: savedCount,
+          skipped: skippedCount,
+          errors: errors.slice(0, 50), // Limit errors to first 50
+        }
+      }) + '\n');
+
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    res.end();
+
+  } catch (error: any) {
+    console.error('Error importing CSV:', error);
+    res.write(JSON.stringify({
+      result: {
+        success: false,
+        message: error.message || 'Ошибка при импорте CSV файла'
+      }
+    }) + '\n');
+    res.end();
+  }
+});
+
+// ============================================================================
+// DB API ROUTES (with authentication and rate limiting)
+// ============================================================================
+// Mount DB API routes (with authentication and rate limiting)
+router.use(dbRoutes);
 
 // Daily metrics endpoint
 router.get('/api/metrics/daily', async (req: Request, res: Response) => {
@@ -116,8 +607,12 @@ router.get('/api/jobs', async (req: Request, res: Response) => {
       SELECT 
         fj.job_id,
         fj.lead_id,
-        fj.created_at,
-        fj.scheduled_at,
+        fj.serial_id,
+        fj.technician_name,
+        fj.job_amount_due,
+        fj.job_total_price,
+        fj.job_end_date_time,
+        fj.last_status_update,
         ds.code as source,
         ds.name as source_name,
         fj.type,
@@ -134,17 +629,17 @@ router.get('/api/jobs', async (req: Request, res: Response) => {
     
     if (start_date) {
       paramCount++;
-      query += ` AND DATE(fj.created_at) >= $${paramCount}`;
+      query += ` AND DATE(COALESCE(fj.job_end_date_time, fj.created_at_db)) >= $${paramCount}`;
       params.push(start_date);
     }
     
     if (end_date) {
       paramCount++;
-      query += ` AND DATE(fj.created_at) <= $${paramCount}`;
+      query += ` AND DATE(COALESCE(fj.job_end_date_time, fj.created_at_db)) <= $${paramCount}`;
       params.push(end_date);
     }
     
-    query += ' ORDER BY fj.created_at DESC';
+    query += ' ORDER BY COALESCE(fj.job_end_date_time, fj.last_status_update, fj.created_at_db) DESC';
     
     if (!start_date && !end_date) {
       paramCount++;
@@ -943,149 +1438,6 @@ router.get('/api/test/elocal/calls', async (req: Request, res: Response) => {
 });
 
 // Test endpoint: Manual sync calls (authenticate + fetch + save)
-// Always uses last 30 days (excluding today) as per documentation
-router.post('/api/test/elocal/calls/sync', async (req: Request, res: Response) => {
-  try {
-    const svcElocalCalls = new SvcElocalCalls();
-    
-    console.log('Manual sync elocal calls: starting full sync (last 30 days)...');
-
-    // Run full sync (syncCalls() calculates last 30 days internally)
-    try {
-      await svcElocalCalls.syncCalls();
-    } finally {
-      await svcElocalCalls.closeBrowser();
-    }
-
-    // Get count of saved calls from elocals
-    const result = await pool.query(
-      `SELECT COUNT(*) as count FROM calls WHERE source = 'elocals'`
-    );
-
-    res.json({
-      success: true,
-      message: 'Sync completed successfully',
-      calls_in_db: parseInt(result.rows[0].count, 10),
-    });
-  } catch (error: any) {
-    console.error('Error in manual sync elocal calls:', error);
-    res.status(500).json({ 
-      success: false,
-      error: error.message,
-      details: error.response?.data || error.stack 
-    });
-  }
-});
-
-// Web interface endpoints for viewing database tables
-
-// Get list of all tables with row counts
-router.get('/api/tables', async (req: Request, res: Response) => {
-  try {
-    const result = await pool.query(`
-      SELECT table_name 
-      FROM information_schema.tables 
-      WHERE table_schema = 'public' 
-      AND table_type = 'BASE TABLE'
-      ORDER BY table_name
-    `);
-
-    const tables = await Promise.all(
-      result.rows.map(async (row) => {
-        try {
-          const countResult = await pool.query(
-            `SELECT COUNT(*) as cnt FROM ${row.table_name}`
-          );
-          return {
-            name: row.table_name,
-            rowCount: parseInt(countResult.rows[0].cnt, 10)
-          };
-        } catch (err: any) {
-          // If table doesn't exist or can't be queried, return 0
-          console.warn(`Error counting rows in ${row.table_name}:`, err.message);
-          return {
-            name: row.table_name,
-            rowCount: 0
-          };
-        }
-      })
-    );
-
-    res.json({ tables });
-  } catch (error: any) {
-    console.error('Error fetching tables list:', error);
-    res.status(500).json({ 
-      error: 'Internal server error',
-      message: error.message 
-    });
-  }
-});
-
-// Get table data with pagination
-router.get('/api/table/:tableName', async (req: Request, res: Response) => {
-  try {
-    const { tableName } = req.params;
-    const page = parseInt(req.query.page as string || '1', 10);
-    const limit = Math.min(parseInt(req.query.limit as string || '100', 10), 1000); // Max 1000 rows per request
-
-    // Validate table name (only letters, numbers, underscores)
-    if (!/^[a-zA-Z0-9_]+$/.test(tableName)) {
-      return res.status(400).json({ 
-        error: 'Invalid table name',
-        message: 'Table name can only contain letters, numbers, and underscores'
-      });
-    }
-
-    // Get total row count
-    const countResult = await pool.query(
-      `SELECT COUNT(*) as cnt FROM ${tableName}`
-    );
-    const totalRows = parseInt(countResult.rows[0].cnt, 10);
-
-    // Get column names
-    const columnsResult = await pool.query(`
-      SELECT column_name 
-      FROM information_schema.columns 
-      WHERE table_schema = 'public' 
-      AND table_name = $1
-      ORDER BY ordinal_position
-    `, [tableName]);
-
-    const columns = columnsResult.rows.map(row => row.column_name);
-
-    if (columns.length === 0) {
-      return res.status(404).json({ 
-        error: 'Table not found',
-        message: `Table "${tableName}" does not exist or has no columns`
-      });
-    }
-
-    // Calculate offset
-    const offset = (page - 1) * limit;
-
-    // Get data with pagination
-    const dataResult = await pool.query(
-      `SELECT * FROM ${tableName} ORDER BY 1 LIMIT $1 OFFSET $2`,
-      [limit, offset]
-    );
-
-    res.json({
-      tableName,
-      columns,
-      rows: dataResult.rows,
-      totalRows,
-      page,
-      limit,
-      totalPages: Math.ceil(totalRows / limit)
-    });
-  } catch (error: any) {
-    console.error('Error fetching table data:', error);
-    res.status(500).json({ 
-      error: 'Internal server error',
-      message: error.message 
-    });
-  }
-});
 
 // Test endpoint: Process CSV files manually
 router.post('/api/test/csv/process', async (req: Request, res: Response) => {
