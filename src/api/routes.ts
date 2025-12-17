@@ -119,6 +119,29 @@ router.get('/api/table/:tableName', async (req: Request, res: Response) => {
       columns = [...regularColumns, ...endColumnsFiltered];
     }
 
+    // For fact_leads, customize column order and visibility
+    if (tableName === 'fact_leads') {
+      // Exclude phone_hash from display
+      columns = columns.filter(col => col !== 'phone_hash');
+      
+      // Define columns that should be at the end
+      const endColumns = ['created_at', 'meta', 'created_at_db', 'updated_at_db'];
+      
+      // Separate columns into regular and end columns
+      let regularColumns = columns.filter(col => !endColumns.includes(col));
+      const endColumnsFiltered = endColumns.filter(col => columns.includes(col));
+      
+      // Find raw_source position and insert meta fields after it
+      const rawSourceIndex = regularColumns.findIndex(col => col === 'raw_source');
+      if (rawSourceIndex !== -1) {
+        // Insert Status, CreatedDate, SerialId after raw_source
+        regularColumns.splice(rawSourceIndex + 1, 0, 'Status', 'CreatedDate', 'SerialId');
+      }
+      
+      // Reorder: regular columns first, then end columns
+      columns = [...regularColumns, ...endColumnsFiltered];
+    }
+
     if (columns.length === 0) {
       return res.status(404).json({ 
         error: 'Table not found',
@@ -130,12 +153,37 @@ router.get('/api/table/:tableName', async (req: Request, res: Response) => {
     const offset = (page - 1) * limit;
 
     // Build SELECT query with explicit column list
-    const selectColumns = columns.join(', ');
+    let selectColumns: string;
     
-    // Special ORDER BY for fact_jobs
+    // For fact_leads, extract fields from meta JSONB
+    if (tableName === 'fact_leads') {
+      // Replace meta-derived columns with actual JSONB extractions
+      const metaFields = ['Status', 'CreatedDate', 'SerialId'];
+      const selectParts: string[] = [];
+      
+      for (const col of columns) {
+        if (metaFields.includes(col)) {
+          // Extract from meta JSONB
+          selectParts.push(`meta->>'${col}' AS "${col}"`);
+        } else {
+          // Regular column, quote it
+          selectParts.push(`"${col}"`);
+        }
+      }
+      
+      selectColumns = selectParts.join(', ');
+    } else {
+      // For other tables, quote column names
+      selectColumns = columns.map(col => `"${col}"`).join(', ');
+    }
+    
+    // Special ORDER BY for different tables
     let orderBy = '1';
     if (tableName === 'fact_jobs') {
       orderBy = 'COALESCE(job_end_date_time, last_status_update, created_at_db) DESC';
+    } else if (tableName === 'elocals_leads') {
+      // Use explicit column names for elocals_leads
+      orderBy = 'COALESCE("date", "created_at") DESC, "id" DESC';
     }
 
     // Get data with pagination
@@ -454,6 +502,207 @@ router.post('/api/import/jobs-csv', upload.single('csv'), async (req: Request, r
           const uuid = record.UUID?.trim() || `record_${i + 1}`;
           console.error(`Error importing job ${uuid}:`, error.message);
           errors.push({ uuid, error: error.message });
+          skippedCount++;
+        }
+      }
+
+      await client.query('COMMIT');
+
+      sendProgress(res, 100, 'Импорт завершен!');
+
+      res.write(JSON.stringify({
+        result: {
+          success: true,
+          total: records.length,
+          imported: savedCount,
+          skipped: skippedCount,
+          errors: errors.slice(0, 50), // Limit errors to first 50
+        }
+      }) + '\n');
+
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    res.end();
+
+  } catch (error: any) {
+    console.error('Error importing CSV:', error);
+    res.write(JSON.stringify({
+      result: {
+        success: false,
+        message: error.message || 'Ошибка при импорте CSV файла'
+      }
+    }) + '\n');
+    res.end();
+  }
+});
+
+/**
+ * Import CSV leads endpoint
+ */
+router.post('/api/import/leads-csv', upload.single('csv'), async (req: Request, res: Response) => {
+  if (!req.file) {
+    return res.status(400).json({
+      success: false,
+      message: 'CSV file is required'
+    });
+  }
+
+  // Set headers for streaming response
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Transfer-Encoding', 'chunked');
+
+  try {
+    sendProgress(res, 5, 'Парсинг CSV файла...');
+
+    // Parse CSV file
+    const fileContent = req.file.buffer.toString('utf-8');
+    const records = parse(fileContent, {
+      columns: true,
+      skip_empty_lines: true,
+      relax_column_count: true,
+    });
+
+    sendProgress(res, 10, `Найдено ${records.length} записей. Начинаю импорт...`);
+
+    if (records.length === 0) {
+      res.write(JSON.stringify({
+        result: {
+          success: false,
+          message: 'CSV файл пуст или не содержит данных'
+        }
+      }) + '\n');
+      return res.end();
+    }
+
+    const client = await pool.connect();
+
+    try {
+      await client.query('BEGIN');
+
+      let savedCount = 0;
+      let skippedCount = 0;
+      const errors: Array<{ lead_id: string; error: string }> = [];
+
+      for (let i = 0; i < records.length; i++) {
+        const record = records[i];
+        
+        try {
+          // Check if converted = 1, skip this record
+          const converted = parseIntValue(record.Converted);
+          if (converted === 1) {
+            skippedCount++;
+            continue;
+          }
+
+          // UUID is required (it's the primary key)
+          const uuid = record.UUID?.trim();
+          if (!uuid || uuid === '') {
+            skippedCount++;
+            continue;
+          }
+
+          // Get source_id
+          const sourceCode = record.Source?.trim() || 'workiz';
+          // Map source names to codes
+          let mappedSourceCode = sourceCode.toLowerCase();
+          if (mappedSourceCode === 'pro referral') {
+            mappedSourceCode = 'pro_referral';
+          }
+          
+          let sourceId: number;
+          try {
+            sourceId = await getSourceId(mappedSourceCode);
+          } catch (error: any) {
+            throw new Error(`Error getting source_id: ${error.message}`);
+          }
+
+          // Parse dates
+          const createdDate = parseDate(record.Created);
+
+          // Parse numeric values
+          const cost = parseNumeric(record.Expenses) || 0;
+          const rawSource = record.Source?.trim() || null;
+
+          // Build meta JSONB object with all additional data
+          const meta: any = {
+            Lead: record['Lead #']?.trim() || null,
+            Status: record.Status?.trim() || null,
+            Tags: record.Tags?.trim() || null,
+            Client: record.Client?.trim() || null,
+            Street: record.Street?.trim() || null,
+            City: record.City?.trim() || null,
+            JobType: record['Job Type']?.trim() || null,
+            Phone: record.Phone?.trim() || null,
+            Assigned: record.Assigned?.trim() || null,
+            Estimates: record.Estimates?.trim() || null,
+            Scheduled: record.Scheduled?.trim() || null,
+            EmailAddress: record['Email Address']?.trim() || null,
+            ZipCode: record['Zip Code']?.trim() || null,
+            ServiceArea: record['Service Area']?.trim() || null,
+            Converted: converted !== null ? converted : null,
+            ConvertedLeadTotal: parseNumeric(record['Converted Lead total']),
+            ConversionDate: record['Conversion Date']?.trim() || null,
+            CreatedBy: record['Created By']?.trim() || null,
+            Company: record.Company?.trim() || null,
+            FirstName: record['First Name']?.trim() || null,
+            LastName: record['Last Name']?.trim() || null,
+            State: record.State?.trim() || null,
+            ClaimIDAndImportantNotes: record['Claim ID and Important notes']?.trim() || null,
+            ApplianceTypeAndBrand: record['Appliance type and Brand']?.trim() || null,
+            IssueDescription: record['Issue description']?.trim() || null,
+            FirstTimeNotice: record['First time notice']?.trim() || null,
+            Expenses: cost,
+          };
+
+          // Remove null values from meta to keep it clean
+          Object.keys(meta).forEach(key => {
+            if (meta[key] === null || meta[key] === undefined) {
+              delete meta[key];
+            }
+          });
+
+          const createdAt = createdDate || new Date();
+
+          // Insert or update lead in fact_leads
+          await client.query(
+            `INSERT INTO fact_leads (
+              lead_id, created_at, source_id, raw_source, cost, meta
+            )
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (lead_id) 
+             DO UPDATE SET 
+               created_at = EXCLUDED.created_at,
+               source_id = EXCLUDED.source_id,
+               raw_source = EXCLUDED.raw_source,
+               cost = EXCLUDED.cost,
+               meta = EXCLUDED.meta,
+               updated_at_db = CURRENT_TIMESTAMP`,
+            [
+              uuid,
+              createdAt,
+              sourceId,
+              rawSource,
+              cost,
+              JSON.stringify(meta),
+            ]
+          );
+
+          savedCount++;
+          
+          // Send progress update every 100 records
+          if (savedCount % 100 === 0 || i === records.length - 1) {
+            const percent = Math.round(10 + ((i + 1) / records.length) * 85);
+            sendProgress(res, percent, `Импортировано ${savedCount} из ${records.length} записей...`);
+          }
+        } catch (error: any) {
+          const uuid = record.UUID?.trim() || `record_${i + 1}`;
+          console.error(`Error importing lead ${uuid}:`, error.message);
+          errors.push({ lead_id: uuid, error: error.message });
           skippedCount++;
         }
       }
