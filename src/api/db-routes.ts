@@ -6,6 +6,7 @@ import { SvcWorkizJobs } from '../services/svc-workiz-jobs';
 import { SvcWorkizLeads } from '../services/svc-workiz-leads';
 import { SvcWorkizPayments } from '../services/svc-workiz-payments';
 import { AggregationService } from '../services/aggregation.service';
+import { NormalizationService } from '../services/normalization.service';
 
 const router = Router();
 
@@ -23,7 +24,7 @@ router.use(dbRateLimitMiddleware);
 router.get('/api/db/jobs', async (req: Request, res: Response) => {
   try {
     const { start_date, end_date, source, limit = 100, offset = 0 } = req.query;
-    
+
     let query = `
       SELECT 
         fj.job_id,
@@ -46,35 +47,35 @@ router.get('/api/db/jobs', async (req: Request, res: Response) => {
     `;
     const params: any[] = [];
     let paramCount = 0;
-    
+
     if (start_date) {
       paramCount++;
       query += ` AND DATE(COALESCE(fj.job_end_date_time, fj.created_at_db)) >= $${paramCount}`;
       params.push(start_date);
     }
-    
+
     if (end_date) {
       paramCount++;
       query += ` AND DATE(COALESCE(fj.job_end_date_time, fj.created_at_db)) <= $${paramCount}`;
       params.push(end_date);
     }
-    
+
     if (source) {
       paramCount++;
       query += ` AND ds.code = $${paramCount}`;
       params.push(source);
     }
-    
+
     query += ' ORDER BY COALESCE(fj.job_end_date_time, fj.last_status_update, fj.created_at_db) DESC';
-    
+
     paramCount++;
     query += ` LIMIT $${paramCount}`;
     params.push(parseInt(limit as string, 10));
-    
+
     paramCount++;
     query += ` OFFSET $${paramCount}`;
     params.push(parseInt(offset as string, 10));
-    
+
     const result = await pool.query(query, params);
     res.json({
       success: true,
@@ -83,10 +84,10 @@ router.get('/api/db/jobs', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Error fetching jobs:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -97,7 +98,7 @@ router.get('/api/db/jobs', async (req: Request, res: Response) => {
 router.get('/api/db/payments', async (req: Request, res: Response) => {
   try {
     const { start_date, end_date, job_id, limit = 100, offset = 0 } = req.query;
-    
+
     let query = `
       SELECT 
         fp.payment_id,
@@ -112,35 +113,35 @@ router.get('/api/db/payments', async (req: Request, res: Response) => {
     `;
     const params: any[] = [];
     let paramCount = 0;
-    
+
     if (start_date) {
       paramCount++;
       query += ` AND DATE(fp.paid_at) >= $${paramCount}`;
       params.push(start_date);
     }
-    
+
     if (end_date) {
       paramCount++;
       query += ` AND DATE(fp.paid_at) <= $${paramCount}`;
       params.push(end_date);
     }
-    
+
     if (job_id) {
       paramCount++;
       query += ` AND fp.job_id = $${paramCount}`;
       params.push(job_id);
     }
-    
+
     query += ' ORDER BY fp.paid_at DESC';
-    
+
     paramCount++;
     query += ` LIMIT $${paramCount}`;
     params.push(parseInt(limit as string, 10));
-    
+
     paramCount++;
     query += ` OFFSET $${paramCount}`;
     params.push(parseInt(offset as string, 10));
-    
+
     const result = await pool.query(query, params);
     res.json({
       success: true,
@@ -149,10 +150,10 @@ router.get('/api/db/payments', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Error fetching payments:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -173,7 +174,7 @@ router.get('/api/db/calls', async (req: Request, res: Response) => {
 router.get('/api/db/leads', async (req: Request, res: Response) => {
   try {
     const { start_date, end_date, source, limit = 100, offset = 0 } = req.query;
-    
+
     let query = `
       SELECT 
         fl.lead_id,
@@ -190,35 +191,35 @@ router.get('/api/db/leads', async (req: Request, res: Response) => {
     `;
     const params: any[] = [];
     let paramCount = 0;
-    
+
     if (start_date) {
       paramCount++;
       query += ` AND DATE(fl.created_at) >= $${paramCount}`;
       params.push(start_date);
     }
-    
+
     if (end_date) {
       paramCount++;
       query += ` AND DATE(fl.created_at) <= $${paramCount}`;
       params.push(end_date);
     }
-    
+
     if (source) {
       paramCount++;
       query += ` AND ds.code = $${paramCount}`;
       params.push(source);
     }
-    
+
     query += ' ORDER BY fl.created_at DESC';
-    
+
     paramCount++;
     query += ` LIMIT $${paramCount}`;
     params.push(parseInt(limit as string, 10));
-    
+
     paramCount++;
     query += ` OFFSET $${paramCount}`;
     params.push(parseInt(offset as string, 10));
-    
+
     const result = await pool.query(query, params);
     res.json({
       success: true,
@@ -227,10 +228,10 @@ router.get('/api/db/leads', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Error fetching leads:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -241,33 +242,33 @@ router.get('/api/db/leads', async (req: Request, res: Response) => {
 router.get('/api/db/elocals_leads', async (req: Request, res: Response) => {
   try {
     const { start_date, end_date, limit = 100, offset = 0 } = req.query;
-    
+
     let query = 'SELECT * FROM elocals_leads WHERE 1=1';
     const params: any[] = [];
     let paramCount = 0;
-    
+
     if (start_date) {
       paramCount++;
       query += ` AND date >= $${paramCount}`;
       params.push(start_date);
     }
-    
+
     if (end_date) {
       paramCount++;
       query += ` AND date <= $${paramCount}`;
       params.push(end_date);
     }
-    
+
     query += ' ORDER BY date DESC';
-    
+
     paramCount++;
     query += ` LIMIT $${paramCount}`;
     params.push(parseInt(limit as string, 10));
-    
+
     paramCount++;
     query += ` OFFSET $${paramCount}`;
     params.push(parseInt(offset as string, 10));
-    
+
     const result = await pool.query(query, params);
     res.json({
       success: true,
@@ -276,10 +277,10 @@ router.get('/api/db/elocals_leads', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Error fetching elocals leads:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -290,45 +291,45 @@ router.get('/api/db/elocals_leads', async (req: Request, res: Response) => {
 router.get('/api/db/metrics/daily', async (req: Request, res: Response) => {
   try {
     const { start_date, end_date, source, segment, limit = 100, offset = 0 } = req.query;
-    
+
     let query = 'SELECT * FROM daily_metrics WHERE 1=1';
     const params: any[] = [];
     let paramCount = 0;
-    
+
     if (start_date) {
       paramCount++;
       query += ` AND date >= $${paramCount}`;
       params.push(start_date);
     }
-    
+
     if (end_date) {
       paramCount++;
       query += ` AND date <= $${paramCount}`;
       params.push(end_date);
     }
-    
+
     if (source) {
       paramCount++;
       query += ` AND source = $${paramCount}`;
       params.push(source);
     }
-    
+
     if (segment) {
       paramCount++;
       query += ` AND segment = $${paramCount}`;
       params.push(segment);
     }
-    
+
     query += ' ORDER BY date DESC, source, segment';
-    
+
     paramCount++;
     query += ` LIMIT $${paramCount}`;
     params.push(parseInt(limit as string, 10));
-    
+
     paramCount++;
     query += ` OFFSET $${paramCount}`;
     params.push(parseInt(offset as string, 10));
-    
+
     const result = await pool.query(query, params);
     res.json({
       success: true,
@@ -337,10 +338,10 @@ router.get('/api/db/metrics/daily', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Error fetching daily metrics:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -351,45 +352,45 @@ router.get('/api/db/metrics/daily', async (req: Request, res: Response) => {
 router.get('/api/db/metrics/monthly', async (req: Request, res: Response) => {
   try {
     const { start_month, end_month, source, segment, limit = 100, offset = 0 } = req.query;
-    
+
     let query = 'SELECT * FROM monthly_metrics WHERE 1=1';
     const params: any[] = [];
     let paramCount = 0;
-    
+
     if (start_month) {
       paramCount++;
       query += ` AND month >= $${paramCount}`;
       params.push(start_month);
     }
-    
+
     if (end_month) {
       paramCount++;
       query += ` AND month <= $${paramCount}`;
       params.push(end_month);
     }
-    
+
     if (source) {
       paramCount++;
       query += ` AND source = $${paramCount}`;
       params.push(source);
     }
-    
+
     if (segment) {
       paramCount++;
       query += ` AND segment = $${paramCount}`;
       params.push(segment);
     }
-    
+
     query += ' ORDER BY month DESC, source, segment';
-    
+
     paramCount++;
     query += ` LIMIT $${paramCount}`;
     params.push(parseInt(limit as string, 10));
-    
+
     paramCount++;
     query += ` OFFSET $${paramCount}`;
     params.push(parseInt(offset as string, 10));
-    
+
     const result = await pool.query(query, params);
     res.json({
       success: true,
@@ -398,10 +399,10 @@ router.get('/api/db/metrics/monthly', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Error fetching monthly metrics:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -425,10 +426,10 @@ router.get('/api/db/tables', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Error fetching tables:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -440,7 +441,7 @@ router.get('/api/db/table/:name', async (req: Request, res: Response) => {
   try {
     const { name } = req.params;
     const { limit = 100, offset = 0 } = req.query;
-    
+
     // Validate table name to prevent SQL injection
     if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) {
       return res.status(400).json({
@@ -448,10 +449,10 @@ router.get('/api/db/table/:name', async (req: Request, res: Response) => {
         error: 'Invalid table name',
       });
     }
-    
+
     const query = `SELECT * FROM ${name} ORDER BY 1 DESC LIMIT $1 OFFSET $2`;
     const result = await pool.query(query, [parseInt(limit as string, 10), parseInt(offset as string, 10)]);
-    
+
     res.json({
       success: true,
       table: name,
@@ -460,10 +461,10 @@ router.get('/api/db/table/:name', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error(`Error fetching table ${req.params.name}:`, error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -478,16 +479,16 @@ router.get('/api/db/table/:name', async (req: Request, res: Response) => {
 router.post('/api/db/jobs', async (req: Request, res: Response) => {
   try {
     const jobs = Array.isArray(req.body) ? req.body : [req.body];
-    
+
     if (!jobs || jobs.length === 0) {
       return res.status(400).json({
         success: false,
         error: 'No jobs provided',
       });
     }
-    
+
     const svcWorkizJobs = new SvcWorkizJobs();
-    
+
     // Convert API format to WorkizJob format
     const workizJobs = jobs.map((job: any) => ({
       id: job.job_id || job.id,
@@ -501,9 +502,9 @@ router.post('/api/db/jobs', async (req: Request, res: Response) => {
       status: job.status,
       raw_data: job.raw_data || job.meta,
     }));
-    
+
     await svcWorkizJobs.saveJobs(workizJobs);
-    
+
     res.json({
       success: true,
       count: jobs.length,
@@ -511,10 +512,10 @@ router.post('/api/db/jobs', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Error saving jobs:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -525,16 +526,16 @@ router.post('/api/db/jobs', async (req: Request, res: Response) => {
 router.post('/api/db/leads', async (req: Request, res: Response) => {
   try {
     const leads = Array.isArray(req.body) ? req.body : [req.body];
-    
+
     if (!leads || leads.length === 0) {
       return res.status(400).json({
         success: false,
         error: 'No leads provided',
       });
     }
-    
+
     const svcWorkizLeads = new SvcWorkizLeads();
-    
+
     // Convert API format to WorkizLead format
     const workizLeads = leads.map((lead: any) => ({
       id: lead.lead_id || lead.id,
@@ -547,9 +548,9 @@ router.post('/api/db/leads', async (req: Request, res: Response) => {
       client_name: lead.client_name || lead.name,
       raw_data: lead.raw_data || lead.meta,
     }));
-    
+
     await svcWorkizLeads.saveLeads(workizLeads);
-    
+
     res.json({
       success: true,
       count: leads.length,
@@ -557,10 +558,10 @@ router.post('/api/db/leads', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Error saving leads:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -571,16 +572,16 @@ router.post('/api/db/leads', async (req: Request, res: Response) => {
 router.post('/api/db/payments', async (req: Request, res: Response) => {
   try {
     const payments = Array.isArray(req.body) ? req.body : [req.body];
-    
+
     if (!payments || payments.length === 0) {
       return res.status(400).json({
         success: false,
         error: 'No payments provided',
       });
     }
-    
+
     const svcWorkizPayments = new SvcWorkizPayments();
-    
+
     // Convert API format to WorkizPayment format
     const workizPayments = payments.map((payment: any) => ({
       id: payment.payment_id || payment.id,
@@ -590,9 +591,9 @@ router.post('/api/db/payments', async (req: Request, res: Response) => {
       method: payment.method,
       raw_data: payment.raw_data || payment.meta,
     }));
-    
+
     await svcWorkizPayments.savePayments(workizPayments);
-    
+
     res.json({
       success: true,
       count: payments.length,
@@ -600,10 +601,10 @@ router.post('/api/db/payments', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Error saving payments:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -624,22 +625,22 @@ router.post('/api/db/calls', async (req: Request, res: Response) => {
 router.post('/api/db/elocals_leads', async (req: Request, res: Response) => {
   try {
     const leads = Array.isArray(req.body) ? req.body : [req.body];
-    
+
     if (!leads || leads.length === 0) {
       return res.status(400).json({
         success: false,
         error: 'No leads provided',
       });
     }
-    
+
     const client = await pool.connect();
-    
+
     try {
       await client.query('BEGIN');
-      
+
       let savedCount = 0;
       const errors: Array<{ lead_id: string; error: string }> = [];
-      
+
       for (const lead of leads) {
         try {
           // Маппинг полей из CSV
@@ -652,7 +653,7 @@ router.post('/api/db/elocals_leads', async (req: Request, res: Response) => {
           // Парсинг даты из поля Time
           let leadDate: Date | null = null;
           let leadTime: Date | null = null;
-          
+
           if (lead['Time'] || lead.time) {
             const timeStr = lead['Time'] || lead.time;
             leadTime = new Date(timeStr);
@@ -663,7 +664,7 @@ router.post('/api/db/elocals_leads', async (req: Request, res: Response) => {
               leadDate = leadTime;
             }
           }
-          
+
           // Если дата не распарсилась, используем date или текущую дату
           if (!leadDate && lead.date) {
             leadDate = new Date(lead.date);
@@ -678,24 +679,34 @@ router.post('/api/db/elocals_leads', async (req: Request, res: Response) => {
           // Создаем raw_data JSONB со всеми полями
           const rawData: any = { ...lead };
 
+          // Нормализация данных
+          const normalizedDate = NormalizationService.date(leadDate);
+          const normalizedTime = NormalizationService.dateTime(leadTime);
+          const normalizedForwarding = NormalizationService.phone(lead['Forwarding Number'] || lead.forwarding_number);
+          const normalizedCallerId = NormalizationService.phone(lead['Caller ID'] || lead.caller_id);
+          const normalizedServiceZip = NormalizationService.zip(lead['Service Zip Code'] || lead.service_zip);
+          const normalizedContactPhone = NormalizationService.phone(lead['Contact Phone Number'] || lead.contact_phone);
+          const normalizedContactCell = NormalizationService.phone(lead['Contact Cell Phone Number'] || lead.contact_cell_phone);
+          const normalizedContactZip = NormalizationService.zip(lead['Contact Zip Code'] || lead.contact_zip);
+
           // Подготовка данных для вставки
           const insertData = [
             leadId, // lead_id
-            leadDate.toISOString().split('T')[0], // date
+            normalizedDate, // date
             lead['Duration'] ? parseInt(String(lead['Duration']), 10) : (lead.duration ? parseInt(String(lead.duration), 10) : null), // duration
             lead['Cost'] ? parseFloat(String(lead['Cost'])) : (lead.cost ? parseFloat(String(lead.cost)) : 0), // cost
             lead['Status'] || lead.status || null, // status
             lead['Lead Type'] || lead.lead_type || lead.type || null, // lead_type
             lead['Current Status'] || lead.current_status || lead.status || null, // current_status
             lead['Unique ID'] || lead.unique_id || null, // unique_id
-            leadTime ? leadTime.toISOString() : (lead['Time'] || lead.time || null), // time (TIMESTAMPTZ)
-            lead['Forwarding Number'] || lead.forwarding_number || null, // forwarding_number
-            lead['Caller ID'] || lead.caller_id || null, // caller_id
+            normalizedTime, // time (TIMESTAMPTZ)
+            normalizedForwarding, // forwarding_number
+            normalizedCallerId, // caller_id
             lead['Caller Name'] || lead.caller_name || null, // caller_name
             lead['Profile'] || lead.profile || null, // profile
             lead['Service City'] || lead.service_city || null, // service_city
             lead['Service State Abbr'] || lead.service_state || null, // service_state
-            lead['Service Zip Code'] || lead.service_zip || null, // service_zip
+            normalizedServiceZip, // service_zip
             lead['Recording URL'] || lead.recording_url || null, // recording_url
             lead['Profile Name'] || lead.profile_name || null, // profile_name
             lead['Dispositions'] || lead.dispositions || null, // dispositions
@@ -703,17 +714,17 @@ router.post('/api/db/elocals_leads', async (req: Request, res: Response) => {
             lead['Notes'] || lead.notes || null, // notes
             lead['Contact First Name'] || lead.contact_first_name || null, // contact_first_name
             lead['Contact Last Name'] || lead.contact_last_name || null, // contact_last_name
-            lead['Contact Phone Number'] || lead.contact_phone || null, // contact_phone
+            normalizedContactPhone, // contact_phone
             lead['Contact Extension'] || lead.contact_extension || null, // contact_extension
-            lead['Contact Cell Phone Number'] || lead.contact_cell_phone || null, // contact_cell_phone
+            normalizedContactCell, // contact_cell_phone
             lead['Contact Email'] || lead.contact_email || null, // contact_email
             lead['Contact Address'] || lead.contact_address || null, // contact_address
             lead['Contact City'] || lead.contact_city || null, // contact_city
             lead['Contact State'] || lead.contact_state || null, // contact_state
-            lead['Contact Zip Code'] || lead.contact_zip || null, // contact_zip
+            normalizedContactZip, // contact_zip
             rawData, // raw_data (JSONB - передаем объект напрямую)
           ];
-          
+
           await client.query(
             `INSERT INTO elocals_leads (
               lead_id, date, duration, cost, status, lead_type, current_status,
@@ -761,16 +772,16 @@ router.post('/api/db/elocals_leads', async (req: Request, res: Response) => {
                updated_at = CURRENT_TIMESTAMP`,
             insertData
           );
-          
+
           savedCount++;
         } catch (error: any) {
           errors.push({ lead_id: lead['Unique ID'] || lead.unique_id || lead.lead_id || lead.id || 'unknown', error: error.message });
           console.error(`Error saving elocals lead ${lead['Unique ID'] || lead.unique_id || lead.lead_id || lead.id}:`, error);
         }
       }
-      
+
       await client.query('COMMIT');
-      
+
       res.json({
         success: true,
         count: savedCount,
@@ -785,10 +796,10 @@ router.post('/api/db/elocals_leads', async (req: Request, res: Response) => {
     }
   } catch (error: any) {
     console.error('Error saving elocals leads:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -799,22 +810,22 @@ router.post('/api/db/elocals_leads', async (req: Request, res: Response) => {
 router.post('/api/db/servicedirect_leads', async (req: Request, res: Response) => {
   try {
     const leads = Array.isArray(req.body) ? req.body : [req.body];
-    
+
     if (!leads || leads.length === 0) {
       return res.status(400).json({
         success: false,
         error: 'No leads provided',
       });
     }
-    
+
     const client = await pool.connect();
-    
+
     try {
       await client.query('BEGIN');
-      
+
       let savedCount = 0;
       const errors: Array<{ lead_id: string; error: string }> = [];
-      
+
       for (const lead of leads) {
         try {
           // Получаем lead_id (поддерживаем оба формата: с пробелами и snake_case)
@@ -827,12 +838,12 @@ router.post('/api/db/servicedirect_leads', async (req: Request, res: Response) =
           // Парсинг даты из поля Date (формат: "2025-12-17 14:21:00 -0500" или ISO)
           let leadDate: Date | null = null;
           let leadTime: Date | null = null;
-          
+
           const dateStr = lead['Date'] || lead.date;
           if (dateStr) {
             try {
               let dateToParse: string = String(dateStr).trim();
-              
+
               // Пробуем распарсить дату с таймзоной
               // Формат: "2025-12-17 14:21:00 -0500" или "2025-12-17 14:21:00 +0500"
               if (dateToParse.includes(' -') || dateToParse.includes(' +')) {
@@ -844,9 +855,9 @@ router.post('/api/db/servicedirect_leads', async (req: Request, res: Response) =
                 // "2025-12-17 14:21:00" -> "2025-12-17T14:21:00"
                 dateToParse = dateToParse.replace(' ', 'T');
               }
-              
+
               leadTime = new Date(dateToParse);
-              
+
               if (!isNaN(leadTime.getTime())) {
                 leadDate = leadTime;
               } else {
@@ -857,7 +868,7 @@ router.post('/api/db/servicedirect_leads', async (req: Request, res: Response) =
               console.warn(`Failed to parse date: ${dateStr}`, e);
             }
           }
-          
+
           // Если дата не распарсилась, используем текущую дату
           if (!leadDate) {
             leadDate = new Date();
@@ -872,21 +883,27 @@ router.post('/api/db/servicedirect_leads', async (req: Request, res: Response) =
             return lead[csvField] !== undefined ? lead[csvField] : (lead[dbField] !== undefined ? lead[dbField] : null);
           };
 
-          // Функция для парсинга числовых значений
+          // Парсинг числовых значений
           const parseNumeric = (value: any): number | null => {
             if (value === null || value === undefined || value === '') return null;
             const parsed = parseFloat(String(value));
             return isNaN(parsed) ? null : parsed;
           };
 
+          // Нормализация данных
+          const normalizedDate = NormalizationService.date(leadDate);
+          const normalizedTime = NormalizationService.dateTime(leadTime);
+          const normalizedPhone = NormalizationService.phone(getValue('Lead Phone', 'lead_phone'));
+          const normalizedZip = NormalizationService.zip(getValue('Zip Code', 'zip_code'));
+
           // Подготовка данных для вставки
           const insertData = [
             leadId, // lead_id
-            leadDate.toISOString().split('T')[0], // date
-            leadTime ? leadTime.toISOString() : null, // time
+            normalizedDate, // date
+            normalizedTime, // time
             getValue('Campaign', 'campaign'), // campaign
             getValue('Lead Name', 'lead_name'), // lead_name
-            getValue('Lead Phone', 'lead_phone'), // lead_phone
+            normalizedPhone, // lead_phone
             getValue('Call Duration', 'call_duration'), // call_duration
             getValue('Lead Email', 'lead_email'), // lead_email
             getValue('Form Submission', 'form_submission'), // form_submission
@@ -906,10 +923,10 @@ router.post('/api/db/servicedirect_leads', async (req: Request, res: Response) =
             getValue('Unit', 'unit'), // unit
             getValue('City', 'city'), // city
             getValue('State', 'state'), // state
-            getValue('Zip Code', 'zip_code'), // zip_code
+            normalizedZip, // zip_code
             rawData, // raw_data (JSONB)
           ];
-          
+
           await client.query(
             `INSERT INTO servicedirect_leads (
               lead_id, date, time, campaign, lead_name, lead_phone, call_duration,
@@ -949,7 +966,7 @@ router.post('/api/db/servicedirect_leads', async (req: Request, res: Response) =
                updated_at = CURRENT_TIMESTAMP`,
             insertData
           );
-          
+
           savedCount++;
         } catch (error: any) {
           const leadId = lead['Lead Id'] || lead.lead_id || 'unknown';
@@ -957,13 +974,13 @@ router.post('/api/db/servicedirect_leads', async (req: Request, res: Response) =
           console.error(`Error saving Service Direct lead ${leadId}:`, error);
         }
       }
-      
+
       await client.query('COMMIT');
-      
+
       const message = errors.length > 0
         ? `Successfully saved ${savedCount} Service Direct lead(s), ${errors.length} error(s)`
         : `Successfully saved ${savedCount} Service Direct lead(s)`;
-      
+
       res.json({
         success: true,
         count: savedCount,
@@ -978,10 +995,10 @@ router.post('/api/db/servicedirect_leads', async (req: Request, res: Response) =
     }
   } catch (error: any) {
     console.error('Error saving Service Direct leads:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -992,21 +1009,21 @@ router.post('/api/db/servicedirect_leads', async (req: Request, res: Response) =
 router.post('/api/db/batch', async (req: Request, res: Response) => {
   try {
     const { jobs, leads, payments, calls } = req.body;
-    
+
     if (!jobs && !leads && !payments && !calls) {
       return res.status(400).json({
         success: false,
         error: 'No data provided. Expected: jobs, leads, payments, or calls',
       });
     }
-    
+
     const results: any = {
       jobs: { count: 0, errors: [] },
       leads: { count: 0, errors: [] },
       payments: { count: 0, errors: [] },
       calls: { count: 0, errors: [] },
     };
-    
+
     // Save jobs
     if (jobs && Array.isArray(jobs) && jobs.length > 0) {
       try {
@@ -1029,7 +1046,7 @@ router.post('/api/db/batch', async (req: Request, res: Response) => {
         results.jobs.errors.push(error.message);
       }
     }
-    
+
     // Save leads
     if (leads && Array.isArray(leads) && leads.length > 0) {
       try {
@@ -1051,7 +1068,7 @@ router.post('/api/db/batch', async (req: Request, res: Response) => {
         results.leads.errors.push(error.message);
       }
     }
-    
+
     // Save payments
     if (payments && Array.isArray(payments) && payments.length > 0) {
       try {
@@ -1070,18 +1087,18 @@ router.post('/api/db/batch', async (req: Request, res: Response) => {
         results.payments.errors.push(error.message);
       }
     }
-    
+
     // Save calls
     if (calls && Array.isArray(calls) && calls.length > 0) {
       try {
         const client = await pool.connect();
         try {
           await client.query('BEGIN');
-          
+
           for (const call of calls) {
             const callId = call.call_id || call.id;
             if (!callId) continue;
-            
+
             await client.query(
               `INSERT INTO calls (call_id, date, duration, call_type, source)
                VALUES ($1, $2, $3, $4, $5)
@@ -1094,14 +1111,14 @@ router.post('/api/db/batch', async (req: Request, res: Response) => {
                  updated_at = CURRENT_TIMESTAMP`,
               [
                 callId,
-                call.date,
+                NormalizationService.date(call.date),
                 call.duration ? parseInt(String(call.duration), 10) : null,
                 call.call_type || call.type,
                 call.source || 'elocals',
               ]
             );
           }
-          
+
           await client.query('COMMIT');
           results.calls.count = calls.length;
         } catch (error: any) {
@@ -1114,11 +1131,11 @@ router.post('/api/db/batch', async (req: Request, res: Response) => {
         results.calls.errors.push(error.message);
       }
     }
-    
+
     const totalCount = results.jobs.count + results.leads.count + results.payments.count + results.calls.count;
-    const hasErrors = results.jobs.errors.length > 0 || results.leads.errors.length > 0 || 
-                     results.payments.errors.length > 0 || results.calls.errors.length > 0;
-    
+    const hasErrors = results.jobs.errors.length > 0 || results.leads.errors.length > 0 ||
+      results.payments.errors.length > 0 || results.calls.errors.length > 0;
+
     res.json({
       success: !hasErrors,
       total_count: totalCount,
@@ -1127,10 +1144,10 @@ router.post('/api/db/batch', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Error in batch operation:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -1143,10 +1160,10 @@ router.post('/api/db/aggregate/daily', async (req: Request, res: Response) => {
     const { date } = req.body;
     const targetDate = date ? new Date(date) : new Date();
     targetDate.setDate(targetDate.getDate() - 1); // Default to yesterday
-    
+
     const aggregationService = new AggregationService();
     await aggregationService.aggregateDailyMetrics(targetDate);
-    
+
     res.json({
       success: true,
       date: targetDate.toISOString().split('T')[0],
@@ -1154,10 +1171,10 @@ router.post('/api/db/aggregate/daily', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Error aggregating daily metrics:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -1169,7 +1186,7 @@ router.post('/api/db/aggregate/monthly', async (req: Request, res: Response) => 
   try {
     const { month } = req.body;
     let targetMonth: Date;
-    
+
     if (month) {
       targetMonth = new Date(month);
     } else {
@@ -1177,13 +1194,13 @@ router.post('/api/db/aggregate/monthly', async (req: Request, res: Response) => 
       targetMonth = new Date();
       targetMonth.setMonth(targetMonth.getMonth() - 1);
     }
-    
+
     // Use first day of the month
     const monthDate = new Date(targetMonth.getFullYear(), targetMonth.getMonth(), 1);
-    
+
     const aggregationService = new AggregationService();
     await aggregationService.aggregateMonthlyMetrics(monthDate);
-    
+
     res.json({
       success: true,
       month: monthDate.toISOString().split('T')[0],
@@ -1191,10 +1208,10 @@ router.post('/api/db/aggregate/monthly', async (req: Request, res: Response) => 
     });
   } catch (error: any) {
     console.error('Error aggregating monthly metrics:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
   }
 });

@@ -1,5 +1,6 @@
 import axios from 'axios';
 import pool from '../db/connection';
+import { NormalizationService } from './normalization.service';
 
 // Raw response from Workiz API
 interface WorkizJobRaw {
@@ -123,30 +124,12 @@ export class SvcWorkizJobs {
 
       let jobDate: string;
       const dateValue = rawJob.JobDateTime || rawJob.date || rawJob.CreatedDate || rawJob.created_at;
-      if (dateValue) {
-        if (typeof dateValue === 'string') {
-          const datePart = dateValue.split(' ')[0];
-          if (/^\d{4}-\d{2}-\d{2}$/.test(datePart)) {
-            jobDate = datePart;
-          } else {
-            const parsedDate = new Date(dateValue);
-            if (!isNaN(parsedDate.getTime())) {
-              jobDate = parsedDate.toISOString().split('T')[0];
-            } else {
-              console.warn(`Invalid date format for job ${jobId}:`, dateValue);
-              jobDate = new Date().toISOString().split('T')[0];
-            }
-          }
-        } else {
-          const parsedDate = new Date(dateValue);
-          if (!isNaN(parsedDate.getTime())) {
-            jobDate = parsedDate.toISOString().split('T')[0];
-          } else {
-            jobDate = new Date().toISOString().split('T')[0];
-          }
-        }
+      const normalizedDate = NormalizationService.date(dateValue);
+
+      if (normalizedDate) {
+        jobDate = normalizedDate;
       } else {
-        console.warn(`Job ${jobId} missing date field, using today`);
+        console.warn(`Job ${jobId} missing or invalid date field, using today`);
         jobDate = new Date().toISOString().split('T')[0];
       }
 
@@ -154,8 +137,8 @@ export class SvcWorkizJobs {
       const jobSource = rawJob.JobSource || rawJob.Source || rawJob.source || 'workiz';
       const jobStatus = rawJob.Status || rawJob.status || null;
       const jobUnit = rawJob.Unit || rawJob.unit || null;
-      const repairType = rawJob.RepairType || rawJob.repair_type || 
-                        (jobType && jobType.includes('Repair') ? jobType : null);
+      const repairType = rawJob.RepairType || rawJob.repair_type ||
+        (jobType && jobType.includes('Repair') ? jobType : null);
 
       const itemCost = rawJob.item_cost || 0;
       const techCost = rawJob.tech_cost || 0;
@@ -163,8 +146,8 @@ export class SvcWorkizJobs {
       const costValue = totalCost > 0 ? totalCost : (rawJob.Cost || rawJob.cost || null);
       const costFinal = costValue !== null && costValue !== undefined ? parseFloat(String(costValue)) : null;
 
-      const revenue = rawJob.JobTotalPrice || rawJob.SubTotal || rawJob.JobAmountDue || 
-                     rawJob.Revenue || rawJob.revenue || rawJob.TotalAmount || rawJob.total_amount || null;
+      const revenue = rawJob.JobTotalPrice || rawJob.SubTotal || rawJob.JobAmountDue ||
+        rawJob.Revenue || rawJob.revenue || rawJob.TotalAmount || rawJob.total_amount || null;
       const revenueValue = revenue !== null && revenue !== undefined ? parseFloat(String(revenue)) : null;
 
       return {
@@ -205,19 +188,19 @@ export class SvcWorkizJobs {
     if (endDate) {
       console.log(`Warning: end_date parameter (${endDate}) is ignored - Workiz API uses start_date until today`);
     }
-    
+
     console.log(`[PAGINATION] Starting jobs fetch: start_date=${startDate}, only_open=${onlyOpen}, records_per_page=${recordsPerPage}`);
 
     while (hasMore) {
       pageNumber++;
       const pageStartTime = Date.now();
-      
+
       const params: any = {
         start_date: startDate,
         offset: offset,
         records: recordsPerPage, // Workiz API uses 'records' not 'limit'
       };
-      
+
       if (onlyOpen) {
         params.only_open = onlyOpen;
       }
@@ -229,12 +212,12 @@ export class SvcWorkizJobs {
       // Workiz API: GET /api/v1/{API_KEY}/job/all/
       let response;
       let jobsData: WorkizJobRaw[] = [];
-      
+
       try {
         response = await axios.get(`${this.apiBasePath}/job/all/`, { params });
         const requestTime = ((Date.now() - pageStartTime) / 1000).toFixed(2);
         console.log(`[PAGINATION] Page ${pageNumber}: API request completed in ${requestTime}s, status=${response.status}`);
-        
+
         // Log response structure for debugging
         if (pageNumber === 1) {
           console.log(`[PAGINATION] Page ${pageNumber}: Response structure:`, {
@@ -272,7 +255,7 @@ export class SvcWorkizJobs {
       } catch (axiosError: any) {
         consecutiveErrors++;
         const requestTime = ((Date.now() - pageStartTime) / 1000).toFixed(2);
-        
+
         // Enhanced error logging
         console.error(`[PAGINATION] Page ${pageNumber}: API request failed after ${requestTime}s:`, {
           url: `${this.apiBasePath}/job/all/`,
@@ -348,13 +331,13 @@ export class SvcWorkizJobs {
         const previousOffset = offset;
         offset += recordsPerPage;
         console.log(`[PAGINATION] Page ${pageNumber}: Received full page (${jobsData.length} records), continuing to next page: offset ${previousOffset} -> ${offset}`);
-        
+
         if (offset > 10000) {
           console.warn(`[PAGINATION] Page ${pageNumber}: Reached safety limit of 10000 records, stopping pagination`);
           hasMore = false;
         }
       }
-      
+
       // Small delay to avoid rate limiting
       if (hasMore) {
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -376,7 +359,7 @@ export class SvcWorkizJobs {
    */
   async saveJobs(jobs: WorkizJob[]): Promise<void> {
     const client = await pool.connect();
-    
+
     try {
       await client.query('BEGIN');
 
@@ -390,7 +373,7 @@ export class SvcWorkizJobs {
         let leadId: string | null = null;
         let clientId: string | null = null;
         let scheduledAt: Date | null = null;
-        
+
         try {
           if (!job.id) {
             console.warn('Skipping job without ID:', JSON.stringify(job));
@@ -444,7 +427,7 @@ export class SvcWorkizJobs {
 
           if (job.raw_data) {
             const rawData = job.raw_data as any;
-            
+
             // SerialId
             if (rawData.SerialId !== null && rawData.SerialId !== undefined) {
               serialId = parseInt(String(rawData.SerialId), 10);
@@ -470,20 +453,20 @@ export class SvcWorkizJobs {
 
             // JobEndDateTime
             if (rawData.JobEndDateTime) {
-              const parsedDate = new Date(rawData.JobEndDateTime);
-              if (!isNaN(parsedDate.getTime())) {
-                jobEndDateTime = parsedDate;
+              const normalized = NormalizationService.dateTime(rawData.JobEndDateTime);
+              if (normalized) {
+                jobEndDateTime = new Date(normalized);
               }
             }
 
             // LastStatusUpdate - try different possible field names
-            const statusUpdateValue = rawData.LastStatusUpdate || rawData.LastStatusChange || 
-                                     rawData.StatusUpdate || rawData.status_updated_at ||
-                                     rawData.UpdatedDate || rawData.updated_at;
+            const statusUpdateValue = rawData.LastStatusUpdate || rawData.LastStatusChange ||
+              rawData.StatusUpdate || rawData.status_updated_at ||
+              rawData.UpdatedDate || rawData.updated_at;
             if (statusUpdateValue) {
-              const parsedDate = new Date(statusUpdateValue);
-              if (!isNaN(parsedDate.getTime())) {
-                lastStatusUpdate = parsedDate;
+              const normalized = NormalizationService.dateTime(statusUpdateValue);
+              if (normalized) {
+                lastStatusUpdate = new Date(normalized);
               }
             }
           }
@@ -561,7 +544,7 @@ export class SvcWorkizJobs {
       }
 
       await client.query('COMMIT');
-      
+
       console.log(`Jobs save summary: ${savedCount} saved, ${skippedCount} skipped`);
       if (errors.length > 0) {
         console.warn(`Errors encountered (showing first 10):`, errors.slice(0, 10));
@@ -569,7 +552,7 @@ export class SvcWorkizJobs {
           console.warn(`... and ${errors.length - 10} more errors`);
         }
       }
-      
+
       if (savedCount === 0 && jobs.length > 0) {
         console.error('ERROR: No jobs were saved despite having jobs to save. Check errors above.');
       }

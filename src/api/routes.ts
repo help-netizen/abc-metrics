@@ -8,6 +8,7 @@ import { SvcElocalCalls } from '../services/svc-elocal-calls';
 import { CsvService } from '../services/csv.service';
 import dbRoutes from './db-routes';
 import { parse } from 'csv-parse/sync';
+import { NormalizationService } from '../services/normalization.service';
 
 const router = Router();
 
@@ -652,10 +653,10 @@ router.post('/api/import/jobs-csv', upload.single('csv'), async (req: Request, r
           }
 
           // Parse dates
-          const createdDate = parseDate(record.Created || record['Job Date']);
-          const scheduledDate = parseDate(record['Job Date']);
-          const jobEndDate = parseDate(record['Job End']);
-          const lastStatusUpdate = parseDate(record['Conversion Date']);
+          const createdDate = NormalizationService.date(parseDate(record.Created || record['Job Date']));
+          const scheduledDate = NormalizationService.dateTime(parseDate(record['Job Date']));
+          const jobEndDate = NormalizationService.dateTime(parseDate(record['Job End']));
+          const lastStatusUpdate = NormalizationService.dateTime(parseDate(record['Conversion Date']));
 
           // Parse numeric values
           const serialId = parseIntValue(record['Job #']);
@@ -669,13 +670,13 @@ router.post('/api/import/jobs-csv', upload.single('csv'), async (req: Request, r
           const meta: any = {
             client: record.Client?.trim() || null,
             tags: record.Tags?.trim() || null,
-            primaryPhone: record['Primary Phone']?.trim() || null,
+            primaryPhone: NormalizationService.phone(record['Primary Phone']),
             emailAddress: record['Email Address']?.trim() || null,
             status: record.Status?.trim() || null,
             subStatus: record['Sub-Status']?.trim() || null,
             address: record.Address?.trim() || null,
             city: record.City?.trim() || null,
-            zipCode: record['Zip Code']?.trim() || null,
+            zipCode: NormalizationService.zip(record['Zip Code']),
             state: record.State?.trim() || null,
             serviceArea: record['Service Area']?.trim() || null,
             converted: record.Converted?.trim() || null,
@@ -884,7 +885,7 @@ router.post('/api/import/leads-csv', upload.single('csv'), async (req: Request, 
           }
 
           // Parse dates
-          const createdDate = parseDate(record.Created);
+          const createdDate = NormalizationService.date(parseDate(record.Created));
 
           // Parse numeric values
           const cost = parseNumeric(record.Expenses) || 0;
@@ -899,12 +900,12 @@ router.post('/api/import/leads-csv', upload.single('csv'), async (req: Request, 
             Street: record.Street?.trim() || null,
             City: record.City?.trim() || null,
             JobType: record['Job Type']?.trim() || null,
-            Phone: record.Phone?.trim() || null,
+            Phone: NormalizationService.phone(record.Phone),
             Assigned: record.Assigned?.trim() || null,
             Estimates: record.Estimates?.trim() || null,
             Scheduled: record.Scheduled?.trim() || null,
             EmailAddress: record['Email Address']?.trim() || null,
-            ZipCode: record['Zip Code']?.trim() || null,
+            ZipCode: NormalizationService.zip(record['Zip Code']),
             ServiceArea: record['Service Area']?.trim() || null,
             Converted: converted !== null ? converted : null,
             ConvertedLeadTotal: parseNumeric(record['Converted Lead total']),
@@ -1118,13 +1119,13 @@ router.post('/api/import/calls-csv', upload.single('csv'), async (req: Request, 
               )
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
               [
-                callDate.toISOString().split('T')[0], // date
-                callTime ? callTime.toISOString() : null, // time (TIMESTAMPTZ)
+                NormalizationService.date(callDate), // date
+                NormalizationService.dateTime(callTime), // time (TIMESTAMPTZ)
                 durationSeconds, // duration
                 record.From?.trim() || null, // from_name
-                record['From number']?.trim() || null, // from_number
+                NormalizationService.phone(record['From number']), // from_number
                 record.To?.trim() || null, // to_name
-                record['To number']?.trim() || null, // to_number
+                NormalizationService.phone(record['To number']), // to_number
                 record.Flow?.trim() || null, // flow
                 record['Ad group']?.trim() || null, // ad_group
                 record.Answered?.trim() || null, // answered

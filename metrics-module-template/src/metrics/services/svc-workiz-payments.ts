@@ -1,6 +1,12 @@
+/**
+ * Workiz Payments Service for Metrics Module
+ * 
+ * This service fetches payments from Workiz API and saves them to abc-metrics via API.
+ * No direct database connections - all operations go through AbcMetricsClient.
+ */
+
 import axios from 'axios';
-import pool from '../db/connection';
-import { NormalizationService } from './normalization.service';
+import { AbcMetricsClient, AbcMetricsPayment } from './abc-metrics-client';
 
 // Raw response from Workiz API for payments
 interface WorkizPaymentRaw {
@@ -23,7 +29,7 @@ interface WorkizPaymentRaw {
   [key: string]: any;
 }
 
-// Normalized payment interface
+// Normalized payment interface (internal)
 interface WorkizPayment {
   id: string;
   job_id: string;
@@ -38,12 +44,14 @@ export class SvcWorkizPayments {
   private apiKey: string;
   private apiSecret: string;
   private apiBasePath: string;
+  private abcMetricsClient: AbcMetricsClient;
 
   constructor() {
     this.apiKey = process.env.WORKIZ_API_KEY || '';
     this.apiSecret = process.env.WORKIZ_API_SECRET || '';
     const apiUrl = process.env.WORKIZ_API_URL || 'https://api.workiz.com';
     this.apiBasePath = `${apiUrl}/api/v1/${this.apiKey}`;
+    this.abcMetricsClient = new AbcMetricsClient();
 
     if (!this.apiKey) {
       throw new Error('WORKIZ_API_KEY is required');
@@ -80,7 +88,7 @@ export class SvcWorkizPayments {
         id: String(paymentId),
         job_id: String(jobId),
         amount: parseFloat(String(amount)),
-        date: NormalizationService.dateTime(paidAt) || paidAt,
+        date: paidAt,
         payment_type: method || undefined,
         method: method || undefined,
         raw_data: rawPayment,
@@ -98,12 +106,11 @@ export class SvcWorkizPayments {
     try {
       console.log(`Fetching payments from Workiz API: start_date=${startDate}, end_date=${endDate}`);
 
-      // Workiz API: GET /api/v1/{API_KEY}/payments
       const response = await axios.get(`${this.apiBasePath}/payments`, {
         params: {
           start_date: startDate,
           end_date: endDate,
-          updated_at: startDate, // Use updated_at for incremental sync
+          updated_at: startDate,
         },
       });
 
@@ -139,80 +146,54 @@ export class SvcWorkizPayments {
   }
 
   /**
-   * Save payments to fact_payments table
-   * Uses ON CONFLICT DO UPDATE to ensure idempotent syncs - can run hourly without duplicates
+   * Convert WorkizPayment to AbcMetricsPayment format for API
+   */
+  private convertToApiFormat(payment: WorkizPayment): AbcMetricsPayment {
+    return {
+      payment_id: payment.id,
+      job_id: payment.job_id,
+      date: payment.date,
+      amount: payment.amount,
+      method: payment.method,
+      raw_data: payment.raw_data,
+    };
+  }
+
+  /**
+   * Save payments to abc-metrics via API
+   * Uses UPSERT to ensure idempotent syncs - can run hourly without duplicates
    */
   async savePayments(payments: WorkizPayment[]): Promise<void> {
-    const client = await pool.connect();
+    if (!payments || payments.length === 0) {
+      console.log('No payments to save');
+      return;
+    }
 
     try {
-      await client.query('BEGIN');
+      // Convert to API format
+      const apiPayments: AbcMetricsPayment[] = payments
+        .filter(payment => payment.id && payment.job_id) // Filter out invalid payments
+        .map(payment => this.convertToApiFormat(payment));
 
-      let savedCount = 0;
-      let skippedCount = 0;
-      const errors: Array<{ paymentId: string; error: string }> = [];
-
-      for (const payment of payments) {
-        try {
-          if (!payment.id || !payment.job_id) {
-            console.warn('Skipping payment without ID or job_id:', JSON.stringify(payment));
-            skippedCount++;
-            continue;
-          }
-
-          if (savedCount < 3) {
-            console.log(`Saving payment: id=${payment.id}, job_id=${payment.job_id}, amount=${payment.amount}`);
-          }
-
-          // Parse paid_at date
-          const normalizedPaidAt = NormalizationService.dateTime(payment.date);
-          const paidAt = normalizedPaidAt ? new Date(normalizedPaidAt) : new Date();
-
-          const metaJson = payment.raw_data ? JSON.stringify(payment.raw_data) : null;
-
-          await client.query(
-            `INSERT INTO fact_payments (
-              payment_id, job_id, paid_at, amount, method, meta
-            )
-             VALUES ($1, $2, $3, $4, $5, $6)
-             ON CONFLICT (payment_id) 
-             DO UPDATE SET 
-               job_id = EXCLUDED.job_id,
-               paid_at = EXCLUDED.paid_at,
-               amount = EXCLUDED.amount,
-               method = EXCLUDED.method,
-               meta = EXCLUDED.meta,
-               updated_at_db = CURRENT_TIMESTAMP`,
-            [
-              payment.id,
-              payment.job_id,
-              paidAt,
-              payment.amount,
-              payment.method || null,
-              metaJson,
-            ]
-          );
-
-          savedCount++;
-        } catch (dbError: any) {
-          console.error(`Error saving payment ${payment.id}:`, dbError.message);
-          errors.push({ paymentId: payment.id, error: dbError.message });
-          skippedCount++;
-        }
+      if (apiPayments.length === 0) {
+        console.warn('No valid payments to save after conversion');
+        return;
       }
 
-      await client.query('COMMIT');
-
-      console.log(`Payments save summary: ${savedCount} saved, ${skippedCount} skipped`);
-      if (errors.length > 0) {
-        console.warn(`Errors encountered:`, errors.slice(0, 10));
+      console.log(`Saving ${apiPayments.length} payments to abc-metrics via API...`);
+      
+      // Save via API
+      const result = await this.abcMetricsClient.savePayments(apiPayments);
+      
+      if (result.success) {
+        console.log(`Payments save summary: ${result.count || apiPayments.length} saved via API`);
+      } else {
+        console.error(`Error saving payments via API: ${result.error || 'Unknown error'}`);
+        throw new Error(result.error || 'Failed to save payments via API');
       }
-    } catch (error) {
-      await client.query('ROLLBACK');
-      console.error('Error saving Workiz payments:', error);
+    } catch (error: any) {
+      console.error('Error saving Workiz payments via API:', error);
       throw error;
-    } finally {
-      client.release();
     }
   }
 
@@ -227,4 +208,6 @@ export class SvcWorkizPayments {
     await this.savePayments(payments);
   }
 }
+
+
 

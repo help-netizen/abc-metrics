@@ -2,6 +2,7 @@ import { parse } from 'csv-parse/sync';
 import * as fs from 'fs';
 import * as path from 'path';
 import pool from '../db/connection';
+import { NormalizationService } from './normalization.service';
 
 export class CsvService {
   private csvDirectory: string;
@@ -45,14 +46,14 @@ export class CsvService {
 
   async processCsvFile(filePath: string, fileName: string): Promise<void> {
     const records = await this.loadCsvFile(filePath);
-    
+
     if (records.length === 0) {
       return;
     }
 
     // Determine table based on filename
     const tableName = this.getTableNameFromFileName(fileName);
-    
+
     if (!tableName) {
       console.log(`Unknown CSV file type: ${fileName}`);
       return;
@@ -63,7 +64,7 @@ export class CsvService {
 
   private getTableNameFromFileName(fileName: string): string | null {
     const lowerName = fileName.toLowerCase();
-    
+
     if (lowerName.includes('job') || lowerName.includes('work')) {
       return 'jobs';
     } else if (lowerName.includes('payment')) {
@@ -75,13 +76,13 @@ export class CsvService {
     } else if (lowerName.includes('google') || lowerName.includes('spend')) {
       return 'google_spend';
     }
-    
+
     return null;
   }
 
   private async saveRecords(records: any[], tableName: string, source: string): Promise<void> {
     const client = await pool.connect();
-    
+
     try {
       await client.query('BEGIN');
 
@@ -105,10 +106,10 @@ export class CsvService {
       switch (tableName) {
         case 'jobs':
           const jobType = record.type || record.job_type || null;
-          const jobSegment = jobType?.includes('COD') ? 'COD' 
-            : jobType?.includes('INS') ? 'INS' 
-            : 'OTHER';
-          
+          const jobSegment = jobType?.includes('COD') ? 'COD'
+            : jobType?.includes('INS') ? 'INS'
+              : 'OTHER';
+
           await client.query(
             `INSERT INTO jobs (job_id, date, type, source, segment, unit, repair_type, cost, revenue, status)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -126,7 +127,7 @@ export class CsvService {
                updated_at = CURRENT_TIMESTAMP`,
             [
               record.job_id || record.id,
-              record.date,
+              NormalizationService.date(record.date),
               jobType,
               record.source || source,
               jobSegment,
@@ -153,7 +154,7 @@ export class CsvService {
             [
               record.payment_id || record.id,
               record.job_id,
-              record.date,
+              NormalizationService.date(record.date),
               parseFloat(record.amount),
               record.payment_type || record.type,
               source,
@@ -173,7 +174,7 @@ export class CsvService {
                updated_at = CURRENT_TIMESTAMP`,
             [
               record.call_id || record.id,
-              record.date,
+              NormalizationService.date(record.date),
               record.duration ? parseInt(record.duration) : null,
               record.call_type || record.type,
               source,
@@ -195,7 +196,7 @@ export class CsvService {
                updated_at = CURRENT_TIMESTAMP`,
             [
               record.lead_id || record.id,
-              record.date,
+              NormalizationService.date(record.date),
               record.lead_type || record.type,
               record.status,
               record.cost ? parseFloat(record.cost) : 0,
@@ -208,7 +209,7 @@ export class CsvService {
           const spendDate = new Date(record.date);
           const monthDate = new Date(spendDate.getFullYear(), spendDate.getMonth(), 1)
             .toISOString().split('T')[0];
-          
+
           await client.query(
             `INSERT INTO google_spend (date, month, campaign, amount, impressions, clicks)
              VALUES ($1, $2, $3, $4, $5, $6)
@@ -220,7 +221,7 @@ export class CsvService {
                clicks = EXCLUDED.clicks,
                updated_at = CURRENT_TIMESTAMP`,
             [
-              record.date,
+              NormalizationService.date(record.date),
               monthDate,
               record.campaign || 'default',
               parseFloat(record.amount || record.spend || 0),
