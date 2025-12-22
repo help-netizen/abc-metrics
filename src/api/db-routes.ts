@@ -492,7 +492,7 @@ router.post('/api/db/jobs', async (req: Request, res: Response) => {
     // Convert API format to WorkizJob format
     const workizJobs = jobs.map((job: any) => ({
       id: job.job_id || job.id,
-      date: job.date || job.created_at || new Date().toISOString().split('T')[0],
+      date: NormalizationService.date(job.date || job.created_at || new Date()) || new Date().toISOString().split('T')[0],
       type: job.type,
       source: job.source || 'workiz',
       unit: job.unit,
@@ -541,10 +541,10 @@ router.post('/api/db/leads', async (req: Request, res: Response) => {
       id: lead.lead_id || lead.id,
       source: lead.source || 'workiz',
       status: lead.status,
-      created_at: lead.created_at || new Date().toISOString(),
-      updated_at: lead.updated_at || lead.created_at || new Date().toISOString(),
+      created_at: NormalizationService.dateTime(lead.created_at || new Date()) || new Date().toISOString(),
+      updated_at: NormalizationService.dateTime(lead.updated_at || lead.created_at || new Date()) || new Date().toISOString(),
       job_id: lead.job_id,
-      client_phone: lead.client_phone || lead.phone,
+      client_phone: NormalizationService.phone(lead.client_phone || lead.phone) || undefined,
       client_name: lead.client_name || lead.name,
       raw_data: lead.raw_data || lead.meta,
     }));
@@ -586,7 +586,7 @@ router.post('/api/db/payments', async (req: Request, res: Response) => {
     const workizPayments = payments.map((payment: any) => ({
       id: payment.payment_id || payment.id,
       job_id: payment.job_id,
-      date: payment.date || payment.paid_at || new Date().toISOString().split('T')[0],
+      date: NormalizationService.dateTime(payment.date || payment.paid_at || new Date()) || new Date().toISOString(),
       amount: payment.amount,
       method: payment.method,
       raw_data: payment.raw_data || payment.meta,
@@ -1030,7 +1030,7 @@ router.post('/api/db/batch', async (req: Request, res: Response) => {
         const svcWorkizJobs = new SvcWorkizJobs();
         const workizJobs = jobs.map((job: any) => ({
           id: job.job_id || job.id,
-          date: job.date || job.created_at || new Date().toISOString().split('T')[0],
+          date: NormalizationService.date(job.date || job.created_at || new Date()) || new Date().toISOString().split('T')[0],
           type: job.type,
           source: job.source || 'workiz',
           unit: job.unit,
@@ -1055,10 +1055,10 @@ router.post('/api/db/batch', async (req: Request, res: Response) => {
           id: lead.lead_id || lead.id,
           source: lead.source || 'workiz',
           status: lead.status,
-          created_at: lead.created_at || new Date().toISOString(),
-          updated_at: lead.updated_at || lead.created_at || new Date().toISOString(),
+          created_at: NormalizationService.dateTime(lead.created_at || new Date()) || new Date().toISOString(),
+          updated_at: NormalizationService.dateTime(lead.updated_at || lead.created_at || new Date()) || new Date().toISOString(),
           job_id: lead.job_id,
-          client_phone: lead.client_phone || lead.phone,
+          client_phone: NormalizationService.phone(lead.client_phone || lead.phone) || undefined,
           client_name: lead.client_name || lead.name,
           raw_data: lead.raw_data || lead.meta,
         }));
@@ -1076,7 +1076,7 @@ router.post('/api/db/batch', async (req: Request, res: Response) => {
         const workizPayments = payments.map((payment: any) => ({
           id: payment.payment_id || payment.id,
           job_id: payment.job_id,
-          date: payment.date || payment.paid_at || new Date().toISOString().split('T')[0],
+          date: NormalizationService.dateTime(payment.date || payment.paid_at || new Date()) || new Date().toISOString(),
           amount: payment.amount,
           method: payment.method,
           raw_data: payment.raw_data || payment.meta,

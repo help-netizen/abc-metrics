@@ -394,8 +394,12 @@ export class SvcWorkizLeads {
           }
 
           const rawPayloadJson = lead.raw_data ? JSON.stringify(lead.raw_data) : null;
-          const createdAt = lead.created_at ? new Date(lead.created_at) : new Date();
-          const updatedAt = lead.updated_at ? new Date(lead.updated_at) : createdAt;
+
+          const normalizedCreatedAt = NormalizationService.dateTime(lead.created_at);
+          const createdAt = normalizedCreatedAt ? new Date(normalizedCreatedAt) : new Date();
+
+          const normalizedUpdatedAt = NormalizationService.dateTime(lead.updated_at);
+          const updatedAt = normalizedUpdatedAt ? new Date(normalizedUpdatedAt) : createdAt;
 
           await client.query(
             `INSERT INTO fact_leads (

@@ -472,7 +472,8 @@ export class SvcWorkizJobs {
           }
 
           const metaJson = job.raw_data ? JSON.stringify(job.raw_data) : null;
-          const createdAt = job.date ? new Date(job.date) : new Date();
+          const normalizedDate = NormalizationService.date(job.date);
+          const createdAt = normalizedDate ? new Date(normalizedDate) : new Date();
 
           await client.query(
             `INSERT INTO fact_jobs (
