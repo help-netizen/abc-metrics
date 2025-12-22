@@ -30,19 +30,62 @@ router.get('/api/tables', async (req: Request, res: Response) => {
     const tables = await Promise.all(
       result.rows.map(async (row) => {
         try {
+          const tableName = row.table_name;
+
+          // Get row count
           const countResult = await pool.query(
-            `SELECT COUNT(*) as cnt FROM ${row.table_name}`
+            `SELECT COUNT(*) as cnt FROM ${tableName}`
           );
+          const rowCount = parseInt(countResult.rows[0].cnt, 10);
+
+          // Get last update time
+          // Try to find updated_at, updated_at_db, created_at, or created_at_db columns
+          let lastUpdated: Date | null = null;
+
+          try {
+            // Check which timestamp columns exist
+            const columnsResult = await pool.query(`
+              SELECT column_name 
+              FROM information_schema.columns 
+              WHERE table_schema = 'public' 
+              AND table_name = $1 
+              AND column_name IN ('updated_at', 'updated_at_db', 'created_at', 'created_at_db')
+              ORDER BY CASE column_name
+                WHEN 'updated_at' THEN 1
+                WHEN 'updated_at_db' THEN 2
+                WHEN 'created_at' THEN 3
+                WHEN 'created_at_db' THEN 4
+              END
+            `, [tableName]);
+
+            if (columnsResult.rows.length > 0 && rowCount > 0) {
+              // Try to get max value from the first available timestamp column
+              const timestampColumn = columnsResult.rows[0].column_name;
+              const maxResult = await pool.query(
+                `SELECT MAX(${timestampColumn}) as max_time FROM ${tableName}`
+              );
+
+              if (maxResult.rows[0]?.max_time) {
+                lastUpdated = new Date(maxResult.rows[0].max_time);
+              }
+            }
+          } catch (err: any) {
+            // If we can't get last updated time, just continue without it
+            console.warn(`Error getting last update time for ${tableName}:`, err.message);
+          }
+
           return {
-            name: row.table_name,
-            rowCount: parseInt(countResult.rows[0].cnt, 10)
+            name: tableName,
+            rowCount,
+            lastUpdated: lastUpdated ? lastUpdated.toISOString() : null
           };
         } catch (err: any) {
           // If table doesn't exist or can't be queried, return 0
-          console.warn(`Error counting rows in ${row.table_name}:`, err.message);
+          console.warn(`Error processing table ${row.table_name}:`, err.message);
           return {
             name: row.table_name,
-            rowCount: 0
+            rowCount: 0,
+            lastUpdated: null
           };
         }
       })
@@ -51,10 +94,44 @@ router.get('/api/tables', async (req: Request, res: Response) => {
     res.json({ tables });
   } catch (error: any) {
     console.error('Error fetching tables list:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
     });
+  }
+});
+
+// Export tables list to CSV
+router.get('/api/tables/csv', async (req: Request, res: Response) => {
+  try {
+    const result = await pool.query(`
+      SELECT table_name 
+      FROM information_schema.tables 
+      WHERE table_schema = 'public' 
+      AND table_type = 'BASE TABLE'
+      ORDER BY table_name
+    `);
+
+    const tables = await Promise.all(
+      result.rows.map(async (row) => {
+        const tableName = row.table_name;
+        const countResult = await pool.query(`SELECT COUNT(*) as cnt FROM ${tableName}`);
+        return {
+          name: tableName,
+          rowCount: parseInt(countResult.rows[0].cnt, 10)
+        };
+      })
+    );
+
+    const header = 'Table Name,Row Count';
+    const rows = tables.map(t => `${t.name},${t.rowCount}`);
+    const csvContent = [header, ...rows].join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="abc_metrics_tables_list.csv"');
+    res.send(csvContent);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -67,7 +144,7 @@ router.get('/api/table/:tableName', async (req: Request, res: Response) => {
 
     // Validate table name (only letters, numbers, underscores)
     if (!/^[a-zA-Z0-9_]+$/.test(tableName)) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Invalid table name',
         message: 'Table name can only contain letters, numbers, and underscores'
       });
@@ -94,18 +171,18 @@ router.get('/api/table/:tableName', async (req: Request, res: Response) => {
     if (tableName === 'fact_jobs') {
       // Exclude created_at and scheduled_at from display
       columns = columns.filter(col => col !== 'created_at' && col !== 'scheduled_at');
-      
+
       // Define columns that should be at the end
       const endColumns = ['meta', 'lead_id', 'source_id', 'created_at_db', 'updated_at_db'];
-      
+
       // Separate columns into regular and end columns
       let regularColumns = columns.filter(col => !endColumns.includes(col));
       const endColumnsFiltered = endColumns.filter(col => columns.includes(col));
-      
+
       // Reorder: put Status immediately after Type
       const typeIndex = regularColumns.findIndex(col => col.toLowerCase() === 'type');
       const statusIndex = regularColumns.findIndex(col => col.toLowerCase() === 'status');
-      
+
       if (typeIndex !== -1 && statusIndex !== -1 && statusIndex !== typeIndex + 1) {
         // Get the status column name
         const statusColumn = regularColumns[statusIndex];
@@ -114,7 +191,7 @@ router.get('/api/table/:tableName', async (req: Request, res: Response) => {
         // Insert status right after type
         regularColumns.splice(typeIndex + 1, 0, statusColumn);
       }
-      
+
       // Reorder: regular columns first, then end columns
       columns = [...regularColumns, ...endColumnsFiltered];
     }
@@ -123,27 +200,27 @@ router.get('/api/table/:tableName', async (req: Request, res: Response) => {
     if (tableName === 'fact_leads') {
       // Exclude phone_hash from display
       columns = columns.filter(col => col !== 'phone_hash');
-      
+
       // Define columns that should be at the end
       const endColumns = ['created_at', 'meta', 'created_at_db', 'updated_at_db'];
-      
+
       // Separate columns into regular and end columns
       let regularColumns = columns.filter(col => !endColumns.includes(col));
       const endColumnsFiltered = endColumns.filter(col => columns.includes(col));
-      
+
       // Find raw_source position and insert meta fields after it
       const rawSourceIndex = regularColumns.findIndex(col => col === 'raw_source');
       if (rawSourceIndex !== -1) {
         // Insert Status, CreatedDate, SerialId after raw_source
         regularColumns.splice(rawSourceIndex + 1, 0, 'Status', 'CreatedDate', 'SerialId');
       }
-      
+
       // Reorder: regular columns first, then end columns
       columns = [...regularColumns, ...endColumnsFiltered];
     }
 
     if (columns.length === 0) {
-      return res.status(404).json({ 
+      return res.status(404).json({
         error: 'Table not found',
         message: `Table "${tableName}" does not exist or has no columns`
       });
@@ -154,13 +231,13 @@ router.get('/api/table/:tableName', async (req: Request, res: Response) => {
 
     // Build SELECT query with explicit column list
     let selectColumns: string;
-    
+
     // For fact_leads, extract fields from meta JSONB
     if (tableName === 'fact_leads') {
       // Replace meta-derived columns with actual JSONB extractions
       const metaFields = ['Status', 'CreatedDate', 'SerialId'];
       const selectParts: string[] = [];
-      
+
       for (const col of columns) {
         if (metaFields.includes(col)) {
           // Extract from meta JSONB
@@ -170,13 +247,13 @@ router.get('/api/table/:tableName', async (req: Request, res: Response) => {
           selectParts.push(`"${col}"`);
         }
       }
-      
+
       selectColumns = selectParts.join(', ');
     } else {
       // For other tables, quote column names
       selectColumns = columns.map(col => `"${col}"`).join(', ');
     }
-    
+
     // Special ORDER BY for different tables
     let orderBy = '1';
     if (tableName === 'fact_jobs') {
@@ -203,9 +280,115 @@ router.get('/api/table/:tableName', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Error fetching table data:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Internal server error',
-      message: error.message 
+      message: error.message
+    });
+  }
+});
+
+// Export table data to CSV
+router.get('/api/table/:tableName/csv', async (req: Request, res: Response) => {
+  try {
+    const { tableName } = req.params;
+
+    // Validate table name
+    if (!/^[a-zA-Z0-9_]+$/.test(tableName)) {
+      return res.status(400).json({ error: 'Invalid table name' });
+    }
+
+    // Get column names
+    const columnsResult = await pool.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_schema = 'public' 
+      AND table_name = $1
+      ORDER BY ordinal_position
+    `, [tableName]);
+
+    const columns = columnsResult.rows.map(row => row.column_name);
+
+    if (columns.length === 0) {
+      return res.status(404).json({ error: 'Table not found' });
+    }
+
+    // Special handling for fact_leads to exclude phone_hash and include meta fields
+    let selectColumns: string;
+    let finalColumns = [...columns];
+
+    if (tableName === 'fact_leads') {
+      finalColumns = columns.filter(col => col !== 'phone_hash');
+      // Adding meta fields like in the regular table view
+      const metaFields = ['Status', 'CreatedDate', 'SerialId'];
+
+      const selectParts: string[] = [];
+      const updatedFinalColumns: string[] = [];
+
+      for (const col of columns) {
+        if (col === 'phone_hash') continue;
+
+        if (col === 'raw_source') {
+          selectParts.push(`"raw_source"`);
+          updatedFinalColumns.push('raw_source');
+          // Insert meta fields after raw_source
+          for (const mf of metaFields) {
+            selectParts.push(`meta->>'${mf}' AS "${mf}"`);
+            updatedFinalColumns.push(mf);
+          }
+        } else {
+          selectParts.push(`"${col}"`);
+          updatedFinalColumns.push(col);
+        }
+      }
+      selectColumns = selectParts.join(', ');
+      finalColumns = updatedFinalColumns;
+    } else if (tableName === 'fact_jobs') {
+      // Exclude created_at and scheduled_at for consistency with view
+      finalColumns = columns.filter(col => col !== 'created_at' && col !== 'scheduled_at');
+      selectColumns = finalColumns.map(col => `"${col}"`).join(', ');
+    } else {
+      selectColumns = columns.map(col => `"${col}"`).join(', ');
+    }
+
+    // Special ORDER BY for different tables
+    let orderBy = '1';
+    if (tableName === 'fact_jobs') {
+      orderBy = 'COALESCE(job_end_date_time, last_status_update, created_at_db) DESC';
+    } else if (tableName === 'elocals_leads') {
+      orderBy = 'COALESCE("date", "created_at") DESC, "id" DESC';
+    }
+
+    // Get all data (with high limit for export)
+    const dataResult = await pool.query(
+      `SELECT ${selectColumns} FROM ${tableName} ORDER BY ${orderBy} LIMIT 50000`
+    );
+
+    // Convert to CSV
+    const escapeCSV = (val: any) => {
+      if (val === null || val === undefined) return '';
+      let str = String(val);
+      if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+        str = '"' + str.replace(/"/g, '""') + '"';
+      }
+      return str;
+    };
+
+    const header = finalColumns.join(',');
+    const rows = dataResult.rows.map(row =>
+      finalColumns.map(col => escapeCSV(row[col])).join(',')
+    );
+
+    const csvContent = [header, ...rows].join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="${tableName}_export_${new Date().toISOString().split('T')[0]}.csv"`);
+    res.send(csvContent);
+
+  } catch (error: any) {
+    console.error('Error exporting CSV:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
     });
   }
 });
@@ -275,14 +458,53 @@ async function getSourceId(sourceCode: string): Promise<number> {
 
 /**
  * Parse date string from CSV format
+ * Supports formats like "Wed Dec 17th, 03:21PM" or standard ISO format
  */
 function parseDate(dateStr: string | undefined): Date | null {
   if (!dateStr || dateStr.trim() === '') {
     return null;
   }
 
+  const str = dateStr.trim();
+
   try {
-    const date = new Date(dateStr.trim());
+    // Try to parse format like "Wed Dec 17th, 03:21PM"
+    // Replace "th", "st", "nd", "rd" from day number
+    const normalized = str.replace(/(\d+)(st|nd|rd|th)/i, '$1');
+
+    // Try parsing with Date constructor
+    let date = new Date(normalized);
+    if (!isNaN(date.getTime())) {
+      return date;
+    }
+
+    // Try parsing with date-fns or manual parsing
+    // Format: "Wed Dec 17, 03:21PM" or "Dec 17, 2025 03:21PM"
+    const dateMatch = normalized.match(/(\w+)\s+(\w+)\s+(\d+)[,\s]+(\d+):(\d+)(AM|PM)/i);
+    if (dateMatch) {
+      const [, dayName, monthName, day, hour, minute, ampm] = dateMatch;
+      const months: { [key: string]: number } = {
+        'jan': 0, 'feb': 1, 'mar': 2, 'apr': 3, 'may': 4, 'jun': 5,
+        'jul': 6, 'aug': 7, 'sep': 8, 'oct': 9, 'nov': 10, 'dec': 11
+      };
+      const month = months[monthName.toLowerCase().substring(0, 3)];
+      if (month !== undefined) {
+        let hour24 = parseInt(hour, 10);
+        if (ampm.toUpperCase() === 'PM' && hour24 !== 12) {
+          hour24 += 12;
+        } else if (ampm.toUpperCase() === 'AM' && hour24 === 12) {
+          hour24 = 0;
+        }
+        const currentYear = new Date().getFullYear();
+        date = new Date(currentYear, month, parseInt(day, 10), hour24, parseInt(minute, 10));
+        if (!isNaN(date.getTime())) {
+          return date;
+        }
+      }
+    }
+
+    // Fallback to standard Date parsing
+    date = new Date(str);
     if (!isNaN(date.getTime())) {
       return date;
     }
@@ -313,6 +535,46 @@ function parseIntValue(value: string | undefined): number | null {
   }
   const parsed = parseInt(value, 10);
   return isNaN(parsed) ? null : parsed;
+}
+
+/**
+ * Parse duration from string format like "3 Min 25 Sec" or "30 Sec" to seconds
+ */
+function parseDuration(durationStr: string | undefined): number | null {
+  if (!durationStr || durationStr.trim() === '') {
+    return null;
+  }
+
+  const str = durationStr.trim();
+
+  // Handle "0 Sec" case
+  if (str === '0 Sec' || str === '0') {
+    return 0;
+  }
+
+  let totalSeconds = 0;
+
+  // Extract minutes
+  const minutesMatch = str.match(/(\d+)\s*Min/i);
+  if (minutesMatch) {
+    totalSeconds += parseInt(minutesMatch[1], 10) * 60;
+  }
+
+  // Extract seconds
+  const secondsMatch = str.match(/(\d+)\s*Sec/i);
+  if (secondsMatch) {
+    totalSeconds += parseInt(secondsMatch[1], 10);
+  }
+
+  // If no matches found, try to parse as plain number
+  if (totalSeconds === 0) {
+    const numMatch = str.match(/(\d+)/);
+    if (numMatch) {
+      totalSeconds = parseInt(numMatch[1], 10);
+    }
+  }
+
+  return totalSeconds > 0 ? totalSeconds : null;
 }
 
 /**
@@ -371,7 +633,7 @@ router.post('/api/import/jobs-csv', upload.single('csv'), async (req: Request, r
 
       for (let i = 0; i < records.length; i++) {
         const record = records[i];
-        
+
         try {
           // UUID is required (it's the primary key)
           const uuid = record.UUID?.trim();
@@ -492,7 +754,7 @@ router.post('/api/import/jobs-csv', upload.single('csv'), async (req: Request, r
           );
 
           savedCount++;
-          
+
           // Send progress update every 100 records
           if (savedCount % 100 === 0 || i === records.length - 1) {
             const percent = Math.round(10 + ((i + 1) / records.length) * 85);
@@ -590,7 +852,7 @@ router.post('/api/import/leads-csv', upload.single('csv'), async (req: Request, 
 
       for (let i = 0; i < records.length; i++) {
         const record = records[i];
-        
+
         try {
           // Check if converted = 1, skip this record
           const converted = parseIntValue(record.Converted);
@@ -613,7 +875,7 @@ router.post('/api/import/leads-csv', upload.single('csv'), async (req: Request, 
           if (mappedSourceCode === 'pro referral') {
             mappedSourceCode = 'pro_referral';
           }
-          
+
           let sourceId: number;
           try {
             sourceId = await getSourceId(mappedSourceCode);
@@ -693,7 +955,7 @@ router.post('/api/import/leads-csv', upload.single('csv'), async (req: Request, 
           );
 
           savedCount++;
-          
+
           // Send progress update every 100 records
           if (savedCount % 100 === 0 || i === records.length - 1) {
             const percent = Math.round(10 + ((i + 1) / records.length) * 85);
@@ -742,6 +1004,185 @@ router.post('/api/import/leads-csv', upload.single('csv'), async (req: Request, 
   }
 });
 
+/**
+ * Import CSV calls endpoint
+ */
+router.post('/api/import/calls-csv', upload.single('csv'), async (req: Request, res: Response) => {
+  if (!req.file) {
+    return res.status(400).json({
+      success: false,
+      message: 'CSV file is required'
+    });
+  }
+
+  // Set headers for streaming response
+  res.setHeader('Content-Type', 'application/json');
+  res.setHeader('Transfer-Encoding', 'chunked');
+
+  try {
+    sendProgress(res, 5, 'Парсинг CSV файла...');
+
+    // Parse CSV file
+    const fileContent = req.file.buffer.toString('utf-8');
+    const records = parse(fileContent, {
+      columns: true,
+      skip_empty_lines: true,
+      relax_column_count: true,
+    });
+
+    sendProgress(res, 10, `Найдено ${records.length} записей. Начинаю импорт...`);
+
+    if (records.length === 0) {
+      res.write(JSON.stringify({
+        result: {
+          success: false,
+          message: 'CSV файл пуст или не содержит данных'
+        }
+      }) + '\n');
+      return res.end();
+    }
+
+    const client = await pool.connect();
+    const BATCH_SIZE = 100; // Batch size for processing
+
+    try {
+      await client.query('BEGIN');
+
+      let savedCount = 0;
+      let skippedCount = 0;
+      const errors: Array<{ call_id: string; error: string }> = [];
+
+      // Process records in batches
+      for (let batchStart = 0; batchStart < records.length; batchStart += BATCH_SIZE) {
+        const batchEnd = Math.min(batchStart + BATCH_SIZE, records.length);
+        const batch = records.slice(batchStart, batchEnd);
+
+        for (let i = 0; i < batch.length; i++) {
+          const record = batch[i];
+          const globalIndex = batchStart + i;
+
+          try {
+            // Parse Time field (format: "Wed Dec 17th, 03:21PM")
+            const timeStr = record.Time?.trim() || '';
+
+            if (!timeStr) {
+              skippedCount++;
+              continue;
+            }
+
+            // Parse date and time from Time field (format: "Wed Dec 17th, 03:21PM")
+            let callDate: Date | null = null;
+            let callTime: Date | null = null;
+
+            if (timeStr) {
+              // Try to parse the date format "Wed Dec 17th, 03:21PM"
+              // Convert to standard format
+              try {
+                // Replace "th", "st", "nd", "rd" from day
+                const normalizedTime = timeStr.replace(/(\d+)(st|nd|rd|th)/, '$1');
+                callTime = new Date(normalizedTime);
+                if (isNaN(callTime.getTime())) {
+                  // Try alternative parsing
+                  callTime = parseDate(timeStr);
+                }
+                if (callTime && !isNaN(callTime.getTime())) {
+                  callDate = callTime;
+                }
+              } catch (e) {
+                // Fallback to parseDate
+                callTime = parseDate(timeStr);
+                if (callTime && !isNaN(callTime.getTime())) {
+                  callDate = callTime;
+                }
+              }
+            }
+
+            if (!callDate) {
+              callDate = new Date();
+            }
+
+            // Parse duration from format like "3 Min 25 Sec" or "30 Sec"
+            const durationSeconds = parseDuration(record.Duration);
+
+            // Create raw_data JSONB with all fields
+            const rawData: any = { ...record };
+
+            // Prepare data for insertion
+            // Используем INSERT без ON CONFLICT, так как call_id удален
+            // Можно добавить дубликаты, но это нормально для исторических данных
+            await client.query(
+              `INSERT INTO calls (
+                date, time, duration,
+                from_name, from_number, to_name, to_number,
+                flow, ad_group, answered, job, job_id, raw_data
+              )
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+              [
+                callDate.toISOString().split('T')[0], // date
+                callTime ? callTime.toISOString() : null, // time (TIMESTAMPTZ)
+                durationSeconds, // duration
+                record.From?.trim() || null, // from_name
+                record['From number']?.trim() || null, // from_number
+                record.To?.trim() || null, // to_name
+                record['To number']?.trim() || null, // to_number
+                record.Flow?.trim() || null, // flow
+                record['Ad group']?.trim() || null, // ad_group
+                record.Answered?.trim() || null, // answered
+                record.Job?.trim() || null, // job
+                record['Job ID']?.trim() || null, // job_id
+                rawData, // raw_data (JSONB)
+              ]
+            );
+
+            savedCount++;
+          } catch (error: any) {
+            const timeStr = record.Time?.trim() || `call_${globalIndex}`;
+            console.error(`Error importing call at ${timeStr}:`, error.message);
+            errors.push({ call_id: timeStr, error: error.message });
+            skippedCount++;
+          }
+        }
+
+        // Send progress update after each batch
+        const percent = Math.round(10 + ((batchEnd / records.length) * 85));
+        sendProgress(res, percent, `Импортировано ${savedCount} из ${records.length} записей...`);
+      }
+
+      await client.query('COMMIT');
+
+      sendProgress(res, 100, 'Импорт завершен!');
+
+      res.write(JSON.stringify({
+        result: {
+          success: true,
+          total: records.length,
+          imported: savedCount,
+          skipped: skippedCount,
+          errors: errors.slice(0, 50), // Limit errors to first 50
+        }
+      }) + '\n');
+
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+
+    res.end();
+
+  } catch (error: any) {
+    console.error('Error importing CSV:', error);
+    res.write(JSON.stringify({
+      result: {
+        success: false,
+        message: error.message || 'Ошибка при импорте CSV файла'
+      }
+    }) + '\n');
+    res.end();
+  }
+});
+
 // ============================================================================
 // DB API ROUTES (with authentication and rate limiting)
 // ============================================================================
@@ -752,43 +1193,43 @@ router.use(dbRoutes);
 router.get('/api/metrics/daily', async (req: Request, res: Response) => {
   try {
     const { start_date, end_date, source, segment, limit = 30 } = req.query;
-    
+
     let query = 'SELECT * FROM daily_metrics WHERE 1=1';
     const params: any[] = [];
     let paramCount = 0;
-    
+
     if (start_date) {
       paramCount++;
       query += ` AND date >= $${paramCount}`;
       params.push(start_date);
     }
-    
+
     if (end_date) {
       paramCount++;
       query += ` AND date <= $${paramCount}`;
       params.push(end_date);
     }
-    
+
     if (source) {
       paramCount++;
       query += ` AND source = $${paramCount}`;
       params.push(source);
     }
-    
+
     if (segment) {
       paramCount++;
       query += ` AND segment = $${paramCount}`;
       params.push(segment);
     }
-    
+
     query += ' ORDER BY date DESC, source, segment';
-    
+
     if (!start_date && !end_date) {
       paramCount++;
       query += ` LIMIT $${paramCount}`;
       params.push(limit);
     }
-    
+
     const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (error) {
@@ -801,43 +1242,43 @@ router.get('/api/metrics/daily', async (req: Request, res: Response) => {
 router.get('/api/metrics/monthly', async (req: Request, res: Response) => {
   try {
     const { start_month, end_month, source, segment, limit = 12 } = req.query;
-    
+
     let query = 'SELECT * FROM monthly_metrics WHERE 1=1';
     const params: any[] = [];
     let paramCount = 0;
-    
+
     if (start_month) {
       paramCount++;
       query += ` AND month >= $${paramCount}`;
       params.push(start_month);
     }
-    
+
     if (end_month) {
       paramCount++;
       query += ` AND month <= $${paramCount}`;
       params.push(end_month);
     }
-    
+
     if (source) {
       paramCount++;
       query += ` AND source = $${paramCount}`;
       params.push(source);
     }
-    
+
     if (segment) {
       paramCount++;
       query += ` AND segment = $${paramCount}`;
       params.push(segment);
     }
-    
+
     query += ' ORDER BY month DESC, source, segment';
-    
+
     if (!start_month && !end_month) {
       paramCount++;
       query += ` LIMIT $${paramCount}`;
       params.push(limit);
     }
-    
+
     const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (error) {
@@ -851,7 +1292,7 @@ router.get('/api/jobs', async (req: Request, res: Response) => {
   try {
     const { start_date, end_date, include_raw = 'false', limit = 100 } = req.query;
     const includeRaw = include_raw === 'true';
-    
+
     let query = `
       SELECT 
         fj.job_id,
@@ -875,35 +1316,35 @@ router.get('/api/jobs', async (req: Request, res: Response) => {
     `;
     const params: any[] = [];
     let paramCount = 0;
-    
+
     if (start_date) {
       paramCount++;
       query += ` AND DATE(COALESCE(fj.job_end_date_time, fj.created_at_db)) >= $${paramCount}`;
       params.push(start_date);
     }
-    
+
     if (end_date) {
       paramCount++;
       query += ` AND DATE(COALESCE(fj.job_end_date_time, fj.created_at_db)) <= $${paramCount}`;
       params.push(end_date);
     }
-    
+
     query += ' ORDER BY COALESCE(fj.job_end_date_time, fj.last_status_update, fj.created_at_db) DESC';
-    
+
     if (!start_date && !end_date) {
       paramCount++;
       query += ` LIMIT $${paramCount}`;
       params.push(limit);
     }
-    
+
     const result = await pool.query(query, params);
-    
+
     // Parse meta JSONB if requested
     const rows = result.rows.map(row => {
       if (includeRaw && row.meta) {
         try {
-          row.meta = typeof row.meta === 'string' 
-            ? JSON.parse(row.meta) 
+          row.meta = typeof row.meta === 'string'
+            ? JSON.parse(row.meta)
             : row.meta;
         } catch (e) {
           // Keep as is if parsing fails
@@ -913,7 +1354,7 @@ router.get('/api/jobs', async (req: Request, res: Response) => {
       }
       return row;
     });
-    
+
     res.json(rows);
   } catch (error) {
     console.error('Error fetching jobs:', error);
@@ -926,7 +1367,7 @@ router.get('/api/payments', async (req: Request, res: Response) => {
   try {
     const { start_date, end_date, job_id, include_raw = 'false', limit = 100 } = req.query;
     const includeRaw = include_raw === 'true';
-    
+
     let query = `
       SELECT 
         fp.payment_id,
@@ -942,41 +1383,41 @@ router.get('/api/payments', async (req: Request, res: Response) => {
     `;
     const params: any[] = [];
     let paramCount = 0;
-    
+
     if (start_date) {
       paramCount++;
       query += ` AND DATE(fp.paid_at) >= $${paramCount}`;
       params.push(start_date);
     }
-    
+
     if (end_date) {
       paramCount++;
       query += ` AND DATE(fp.paid_at) <= $${paramCount}`;
       params.push(end_date);
     }
-    
+
     if (job_id) {
       paramCount++;
       query += ` AND fp.job_id = $${paramCount}`;
       params.push(job_id);
     }
-    
+
     query += ' ORDER BY fp.paid_at DESC';
-    
+
     if (!start_date && !end_date) {
       paramCount++;
       query += ` LIMIT $${paramCount}`;
       params.push(limit);
     }
-    
+
     const result = await pool.query(query, params);
-    
+
     // Parse meta JSONB if requested
     const rows = result.rows.map(row => {
       if (includeRaw && row.meta) {
         try {
-          row.meta = typeof row.meta === 'string' 
-            ? JSON.parse(row.meta) 
+          row.meta = typeof row.meta === 'string'
+            ? JSON.parse(row.meta)
             : row.meta;
         } catch (e) {
           // Keep as is if parsing fails
@@ -986,7 +1427,7 @@ router.get('/api/payments', async (req: Request, res: Response) => {
       }
       return row;
     });
-    
+
     res.json(rows);
   } catch (error) {
     console.error('Error fetching payments:', error);
@@ -998,31 +1439,31 @@ router.get('/api/payments', async (req: Request, res: Response) => {
 router.get('/api/calls', async (req: Request, res: Response) => {
   try {
     const { start_date, end_date, limit = 100 } = req.query;
-    
+
     let query = 'SELECT * FROM calls WHERE 1=1';
     const params: any[] = [];
     let paramCount = 0;
-    
+
     if (start_date) {
       paramCount++;
       query += ` AND date >= $${paramCount}`;
       params.push(start_date);
     }
-    
+
     if (end_date) {
       paramCount++;
       query += ` AND date <= $${paramCount}`;
       params.push(end_date);
     }
-    
+
     query += ' ORDER BY date DESC';
-    
+
     if (!start_date && !end_date) {
       paramCount++;
       query += ` LIMIT $${paramCount}`;
       params.push(limit);
     }
-    
+
     const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (error) {
@@ -1034,12 +1475,12 @@ router.get('/api/calls', async (req: Request, res: Response) => {
 // Elocal calls extraction endpoint (without saving to DB)
 router.get('/api/calls/elocal', async (req: Request, res: Response) => {
   const svcElocalCalls = new SvcElocalCalls();
-  
+
   try {
     // Parse optional date parameters
     let startDate: string;
     let endDate: string;
-    
+
     if (req.query.start_date && req.query.end_date) {
       startDate = req.query.start_date as string;
       endDate = req.query.end_date as string;
@@ -1048,16 +1489,16 @@ router.get('/api/calls/elocal', async (req: Request, res: Response) => {
       const yesterday = new Date();
       yesterday.setDate(yesterday.getDate() - 1);
       endDate = yesterday.toISOString().split('T')[0];
-      
+
       const startDateObj = new Date(yesterday);
       startDateObj.setDate(startDateObj.getDate() - 29);
       startDate = startDateObj.toISOString().split('T')[0];
     }
-    
+
     // Fetch and parse calls (without saving)
     const csvContent = await svcElocalCalls.fetchCallsCsv(startDate, endDate);
     const calls = svcElocalCalls.parseCallsCsv(csvContent);
-    
+
     res.json({
       success: true,
       start_date: startDate,
@@ -1081,31 +1522,31 @@ router.get('/api/calls/elocal', async (req: Request, res: Response) => {
 router.get('/api/leads/elocals', async (req: Request, res: Response) => {
   try {
     const { start_date, end_date, limit = 100 } = req.query;
-    
+
     let query = 'SELECT * FROM elocals_leads WHERE 1=1';
     const params: any[] = [];
     let paramCount = 0;
-    
+
     if (start_date) {
       paramCount++;
       query += ` AND date >= $${paramCount}`;
       params.push(start_date);
     }
-    
+
     if (end_date) {
       paramCount++;
       query += ` AND date <= $${paramCount}`;
       params.push(end_date);
     }
-    
+
     query += ' ORDER BY date DESC';
-    
+
     if (!start_date && !end_date) {
       paramCount++;
       query += ` LIMIT $${paramCount}`;
       params.push(limit);
     }
-    
+
     const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (error) {
@@ -1119,7 +1560,7 @@ router.get('/api/leads', async (req: Request, res: Response) => {
   try {
     const { start_date, end_date, source, status, include_raw = 'false', limit = 100 } = req.query;
     const includeRaw = include_raw === 'true';
-    
+
     let query = `
       SELECT 
         fl.lead_id,
@@ -1138,41 +1579,41 @@ router.get('/api/leads', async (req: Request, res: Response) => {
     `;
     const params: any[] = [];
     let paramCount = 0;
-    
+
     if (start_date) {
       paramCount++;
       query += ` AND DATE(fl.created_at) >= $${paramCount}`;
       params.push(start_date);
     }
-    
+
     if (end_date) {
       paramCount++;
       query += ` AND DATE(fl.created_at) <= $${paramCount}`;
       params.push(end_date);
     }
-    
+
     if (source) {
       paramCount++;
       query += ` AND ds.code = $${paramCount}`;
       params.push(source);
     }
-    
+
     query += ' ORDER BY fl.created_at DESC';
-    
+
     if (!start_date && !end_date) {
       paramCount++;
       query += ` LIMIT $${paramCount}`;
       params.push(limit);
     }
-    
+
     const result = await pool.query(query, params);
-    
+
     // Parse meta JSONB if requested
     const rows = result.rows.map(row => {
       if (includeRaw && row.meta) {
         try {
-          row.meta = typeof row.meta === 'string' 
-            ? JSON.parse(row.meta) 
+          row.meta = typeof row.meta === 'string'
+            ? JSON.parse(row.meta)
             : row.meta;
         } catch (e) {
           // Keep as is if parsing fails
@@ -1182,7 +1623,7 @@ router.get('/api/leads', async (req: Request, res: Response) => {
       }
       return row;
     });
-    
+
     res.json(rows);
   } catch (error) {
     console.error('Error fetching leads:', error);
@@ -1194,31 +1635,31 @@ router.get('/api/leads', async (req: Request, res: Response) => {
 router.get('/api/google-spend', async (req: Request, res: Response) => {
   try {
     const { start_date, end_date, limit = 100 } = req.query;
-    
+
     let query = 'SELECT * FROM google_spend WHERE 1=1';
     const params: any[] = [];
     let paramCount = 0;
-    
+
     if (start_date) {
       paramCount++;
       query += ` AND date >= $${paramCount}`;
       params.push(start_date);
     }
-    
+
     if (end_date) {
       paramCount++;
       query += ` AND date <= $${paramCount}`;
       params.push(end_date);
     }
-    
+
     query += ' ORDER BY date DESC';
-    
+
     if (!start_date && !end_date) {
       paramCount++;
       query += ` LIMIT $${paramCount}`;
       params.push(limit);
     }
-    
+
     const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (error) {
@@ -1231,43 +1672,43 @@ router.get('/api/google-spend', async (req: Request, res: Response) => {
 router.get('/api/targets', async (req: Request, res: Response) => {
   try {
     const { start_month, end_month, source, segment, metric_type } = req.query;
-    
+
     let query = 'SELECT * FROM targets WHERE 1=1';
     const params: any[] = [];
     let paramCount = 0;
-    
+
     if (start_month) {
       paramCount++;
       query += ` AND month >= $${paramCount}`;
       params.push(start_month);
     }
-    
+
     if (end_month) {
       paramCount++;
       query += ` AND month <= $${paramCount}`;
       params.push(end_month);
     }
-    
+
     if (source) {
       paramCount++;
       query += ` AND source = $${paramCount}`;
       params.push(source);
     }
-    
+
     if (segment) {
       paramCount++;
       query += ` AND segment = $${paramCount}`;
       params.push(segment);
     }
-    
+
     if (metric_type) {
       paramCount++;
       query += ` AND metric_type = $${paramCount}`;
       params.push(metric_type);
     }
-    
+
     query += ' ORDER BY month DESC, source, segment, metric_type';
-    
+
     const result = await pool.query(query, params);
     res.json(result.rows);
   } catch (error) {
@@ -1292,10 +1733,10 @@ router.get('/api/health', async (req: Request, res: Response) => {
 router.get('/api/test/workiz/jobs', async (req: Request, res: Response) => {
   try {
     const { start_date, end_date, only_open = 'false' } = req.query;
-    
+
     if (!start_date) {
-      return res.status(400).json({ 
-        error: 'start_date parameter is required (format: YYYY-MM-DD)' 
+      return res.status(400).json({
+        error: 'start_date parameter is required (format: YYYY-MM-DD)'
       });
     }
 
@@ -1330,10 +1771,10 @@ router.get('/api/test/workiz/jobs', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Error in test fetch jobs:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: error.message,
-      details: error.response?.data || error.stack 
+      details: error.response?.data || error.stack
     });
   }
 });
@@ -1348,17 +1789,17 @@ router.get('/api/test/workiz/jobs/:uuid', async (req: Request, res: Response) =>
     }
 
     // TODO: implement fetchJobByUuid in SvcWorkizJobs
-    return res.status(501).json({ 
+    return res.status(501).json({
       success: false,
       error: 'fetchJobByUuid not yet implemented in SvcWorkizJobs',
-      uuid 
+      uuid
     });
   } catch (error: any) {
     console.error('Error in test fetch job by UUID:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: error.message,
-      details: error.response?.data || error.stack 
+      details: error.response?.data || error.stack
     });
   }
 });
@@ -1367,10 +1808,10 @@ router.get('/api/test/workiz/jobs/:uuid', async (req: Request, res: Response) =>
 router.post('/api/test/workiz/jobs/sync', async (req: Request, res: Response) => {
   try {
     const { start_date, end_date, only_open = 'false' } = req.body;
-    
+
     if (!start_date) {
-      return res.status(400).json({ 
-        error: 'start_date parameter is required (format: YYYY-MM-DD)' 
+      return res.status(400).json({
+        error: 'start_date parameter is required (format: YYYY-MM-DD)'
       });
     }
 
@@ -1399,10 +1840,10 @@ router.post('/api/test/workiz/jobs/sync', async (req: Request, res: Response) =>
     });
   } catch (error: any) {
     console.error('Error in manual sync jobs:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: error.message,
-      details: error.response?.data || error.stack 
+      details: error.response?.data || error.stack
     });
   }
 });
@@ -1421,10 +1862,10 @@ router.post('/api/test/workiz/jobs/sync-full', async (req: Request, res: Respons
     });
   } catch (error: any) {
     console.error('Error in full sync jobs:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: error.message,
-      details: error.response?.data || error.stack 
+      details: error.response?.data || error.stack
     });
   }
 });
@@ -1435,10 +1876,10 @@ router.post('/api/test/workiz/jobs/sync-full', async (req: Request, res: Respons
 router.get('/api/test/workiz/leads', async (req: Request, res: Response) => {
   try {
     const { start_date, end_date, only_open = 'true' } = req.query;
-    
+
     if (!start_date) {
-      return res.status(400).json({ 
-        error: 'start_date parameter is required (format: YYYY-MM-DD)' 
+      return res.status(400).json({
+        error: 'start_date parameter is required (format: YYYY-MM-DD)'
       });
     }
 
@@ -1473,10 +1914,10 @@ router.get('/api/test/workiz/leads', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Error in test fetch leads:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: error.message,
-      details: error.response?.data || error.stack 
+      details: error.response?.data || error.stack
     });
   }
 });
@@ -1491,17 +1932,17 @@ router.get('/api/test/workiz/leads/:uuid', async (req: Request, res: Response) =
     }
 
     // TODO: implement fetchLeadByUuid in SvcWorkizLeads
-    return res.status(501).json({ 
+    return res.status(501).json({
       success: false,
       error: 'fetchLeadByUuid not yet implemented in SvcWorkizLeads',
-      uuid 
+      uuid
     });
   } catch (error: any) {
     console.error('Error in test fetch lead by UUID:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: error.message,
-      details: error.response?.data || error.stack 
+      details: error.response?.data || error.stack
     });
   }
 });
@@ -1510,10 +1951,10 @@ router.get('/api/test/workiz/leads/:uuid', async (req: Request, res: Response) =
 router.post('/api/test/workiz/leads/sync', async (req: Request, res: Response) => {
   try {
     const { start_date, end_date, only_open = 'false' } = req.body;
-    
+
     if (!start_date) {
-      return res.status(400).json({ 
-        error: 'start_date parameter is required (format: YYYY-MM-DD)' 
+      return res.status(400).json({
+        error: 'start_date parameter is required (format: YYYY-MM-DD)'
       });
     }
 
@@ -1542,10 +1983,10 @@ router.post('/api/test/workiz/leads/sync', async (req: Request, res: Response) =
     });
   } catch (error: any) {
     console.error('Error in manual sync leads:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: error.message,
-      details: error.response?.data || error.stack 
+      details: error.response?.data || error.stack
     });
   }
 });
@@ -1564,10 +2005,10 @@ router.post('/api/test/workiz/leads/sync-full', async (req: Request, res: Respon
     });
   } catch (error: any) {
     console.error('Error in full sync leads:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: error.message,
-      details: error.response?.data || error.stack 
+      details: error.response?.data || error.stack
     });
   }
 });
@@ -1586,10 +2027,10 @@ router.post('/api/test/workiz/payments/sync-full', async (req: Request, res: Res
     });
   } catch (error: any) {
     console.error('Error in full sync payments:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: error.message,
-      details: error.response?.data || error.stack 
+      details: error.response?.data || error.stack
     });
   }
 });
@@ -1601,11 +2042,11 @@ router.post('/api/test/elocal/calls/auth', async (req: Request, res: Response) =
   try {
     console.log('Testing elocal.com authentication...');
     const svcElocalCalls = new SvcElocalCalls();
-    
+
     // Test authentication by trying to fetch CSV for a small date range
     const today = new Date();
     const testDate = today.toISOString().split('T')[0];
-    
+
     try {
       await svcElocalCalls.fetchCallsCsv(testDate, testDate);
       res.json({
@@ -1632,10 +2073,10 @@ router.post('/api/test/elocal/calls/auth', async (req: Request, res: Response) =
     }
   } catch (error: any) {
     console.error('Error in test authentication:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: error.message,
-      details: error.stack 
+      details: error.stack
     });
   }
 });
@@ -1644,15 +2085,15 @@ router.post('/api/test/elocal/calls/auth', async (req: Request, res: Response) =
 router.get('/api/test/elocal/calls', async (req: Request, res: Response) => {
   try {
     const { start_date, end_date } = req.query;
-    
+
     if (!start_date || !end_date) {
-      return res.status(400).json({ 
-        error: 'start_date and end_date parameters are required (format: YYYY-MM-DD)' 
+      return res.status(400).json({
+        error: 'start_date and end_date parameters are required (format: YYYY-MM-DD)'
       });
     }
 
     const svcElocalCalls = new SvcElocalCalls();
-    
+
     console.log(`Test fetch elocal calls: start_date=${start_date}, end_date=${end_date}`);
 
     // Fetch CSV (authentication happens inside fetchCallsCsv)
@@ -1678,10 +2119,10 @@ router.get('/api/test/elocal/calls', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Error in test fetch elocal calls:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: error.message,
-      details: error.response?.data || error.stack 
+      details: error.response?.data || error.stack
     });
   }
 });
@@ -1693,9 +2134,9 @@ router.post('/api/test/csv/process', async (req: Request, res: Response) => {
   try {
     console.log('Processing CSV files...');
     const csvService = new CsvService();
-    
+
     await csvService.processCsvFiles();
-    
+
     res.json({
       success: true,
       message: 'CSV files processed successfully',
@@ -1703,10 +2144,10 @@ router.post('/api/test/csv/process', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Error processing CSV files:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: error.message,
-      details: error.stack 
+      details: error.stack
     });
   }
 });

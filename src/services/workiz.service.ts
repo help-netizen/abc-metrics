@@ -404,7 +404,32 @@ export class WorkizService {
     };
   }
 
+  /**
+   * Check if database connection is available
+   */
+  private async checkDatabaseConnection(): Promise<boolean> {
+    const dbUrl = process.env.DATABASE_URL || process.env.POSTGRES_URL;
+    if (!dbUrl) {
+      console.error('[WorkizService] DATABASE_URL is not set. Cannot save jobs to database.');
+      return false;
+    }
+
+    try {
+      await pool.query('SELECT 1');
+      return true;
+    } catch (error: any) {
+      console.error('[WorkizService] Database connection failed:', error.message);
+      return false;
+    }
+  }
+
   async saveJobs(jobs: WorkizJob[]): Promise<void> {
+    // Check database connection before attempting to save
+    const dbAvailable = await this.checkDatabaseConnection();
+    if (!dbAvailable) {
+      throw new Error('Database connection is not available. Please set DATABASE_URL environment variable.');
+    }
+
     const client = await pool.connect();
     
     try {
@@ -489,12 +514,25 @@ export class WorkizService {
           console.warn(`... and ${errors.length - 10} more errors`);
         }
       }
-    } catch (error) {
-      await client.query('ROLLBACK');
-      console.error('Error saving Workiz jobs:', error);
+    } catch (error: any) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('[WorkizService] Error during rollback:', rollbackError);
+      }
+      
+      // Check if it's a connection error
+      if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND' || error.message?.includes('ECONNREFUSED')) {
+        console.error('[WorkizService] Database connection refused. Check DATABASE_URL environment variable.');
+        throw new Error('Database connection refused. Please verify DATABASE_URL is correctly set.');
+      }
+      
+      console.error('[WorkizService] Error saving Workiz jobs:', error.message || error);
       throw error;
     } finally {
-      client.release();
+      if (client) {
+        client.release();
+      }
     }
   }
 
@@ -692,6 +730,12 @@ export class WorkizService {
   }
 
   async saveLeads(leads: WorkizLead[]): Promise<void> {
+    // Check database connection before attempting to save
+    const dbAvailable = await this.checkDatabaseConnection();
+    if (!dbAvailable) {
+      throw new Error('Database connection is not available. Please set DATABASE_URL environment variable.');
+    }
+
     const client = await pool.connect();
     
     try {
@@ -771,12 +815,25 @@ export class WorkizService {
           console.warn(`... and ${errors.length - 10} more errors`);
         }
       }
-    } catch (error) {
-      await client.query('ROLLBACK');
-      console.error('Error saving Workiz leads:', error);
+    } catch (error: any) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('[WorkizService] Error during rollback:', rollbackError);
+      }
+      
+      // Check if it's a connection error
+      if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND' || error.message?.includes('ECONNREFUSED')) {
+        console.error('[WorkizService] Database connection refused. Check DATABASE_URL environment variable.');
+        throw new Error('Database connection refused. Please verify DATABASE_URL is correctly set.');
+      }
+      
+      console.error('[WorkizService] Error saving Workiz leads:', error.message || error);
       throw error;
     } finally {
-      client.release();
+      if (client) {
+        client.release();
+      }
     }
   }
 
@@ -810,6 +867,12 @@ export class WorkizService {
   }
 
   async savePayments(payments: WorkizPayment[]): Promise<void> {
+    // Check database connection before attempting to save
+    const dbAvailable = await this.checkDatabaseConnection();
+    if (!dbAvailable) {
+      throw new Error('Database connection is not available. Please set DATABASE_URL environment variable.');
+    }
+
     const client = await pool.connect();
     
     try {
@@ -838,12 +901,25 @@ export class WorkizService {
 
       await client.query('COMMIT');
       console.log(`Saved ${payments.length} payments from Workiz`);
-    } catch (error) {
-      await client.query('ROLLBACK');
-      console.error('Error saving Workiz payments:', error);
+    } catch (error: any) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('[WorkizService] Error during rollback:', rollbackError);
+      }
+      
+      // Check if it's a connection error
+      if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND' || error.message?.includes('ECONNREFUSED')) {
+        console.error('[WorkizService] Database connection refused. Check DATABASE_URL environment variable.');
+        throw new Error('Database connection refused. Please verify DATABASE_URL is correctly set.');
+      }
+      
+      console.error('[WorkizService] Error saving Workiz payments:', error.message || error);
       throw error;
     } finally {
-      client.release();
+      if (client) {
+        client.release();
+      }
     }
   }
 
@@ -876,6 +952,12 @@ export class WorkizService {
   }
 
   async saveCalls(calls: WorkizCall[]): Promise<void> {
+    // Check database connection before attempting to save
+    const dbAvailable = await this.checkDatabaseConnection();
+    if (!dbAvailable) {
+      throw new Error('Database connection is not available. Please set DATABASE_URL environment variable.');
+    }
+
     const client = await pool.connect();
     
     try {
@@ -910,12 +992,25 @@ export class WorkizService {
 
       await client.query('COMMIT');
       console.log(`Saved ${calls.length} calls from Workiz`);
-    } catch (error) {
-      await client.query('ROLLBACK');
-      console.error('Error saving Workiz calls:', error);
+    } catch (error: any) {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        console.error('[WorkizService] Error during rollback:', rollbackError);
+      }
+      
+      // Check if it's a connection error
+      if (error.code === 'ECONNREFUSED' || error.code === 'ENOTFOUND' || error.message?.includes('ECONNREFUSED')) {
+        console.error('[WorkizService] Database connection refused. Check DATABASE_URL environment variable.');
+        throw new Error('Database connection refused. Please verify DATABASE_URL is correctly set.');
+      }
+      
+      console.error('[WorkizService] Error saving Workiz calls:', error.message || error);
       throw error;
     } finally {
-      client.release();
+      if (client) {
+        client.release();
+      }
     }
   }
 

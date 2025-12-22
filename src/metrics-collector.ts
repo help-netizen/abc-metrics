@@ -17,8 +17,29 @@ const app = express();
 const PORT = parseInt(process.env.PORT || process.env.METRICS_PORT || '3001', 10);
 
 // Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Configure body parser with increased limits for batch operations
+// Default Express limit is 100kb, which is too small for batch requests from rely-lead-processor
+// Set to 10MB to handle large batches (jobs, leads, payments, calls)
+const JSON_BODY_LIMIT = process.env.JSON_BODY_LIMIT || '10mb';
+const URLENCODED_BODY_LIMIT = process.env.URLENCODED_BODY_LIMIT || '10mb';
+
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
+app.use(express.urlencoded({ extended: true, limit: URLENCODED_BODY_LIMIT }));
+
+// Error handler for payload size errors
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err.type === 'entity.too.large' || err instanceof Error && err.message.includes('request entity too large')) {
+    console.error(`[PayloadTooLarge] Request from ${req.ip} to ${req.path} exceeded size limit (${JSON_BODY_LIMIT})`);
+    console.error(`[PayloadTooLarge] Request method: ${req.method}, Content-Type: ${req.headers['content-type']}`);
+    return res.status(413).json({
+      success: false,
+      error: 'Payload Too Large',
+      message: `Request body exceeds maximum size of ${JSON_BODY_LIMIT}. Please split large batches into smaller requests.`,
+      limit: JSON_BODY_LIMIT,
+    });
+  }
+  next(err);
+});
 
 // CORS middleware
 app.use((req, res, next) => {
@@ -39,6 +60,10 @@ app.use(express.static(path.join(__dirname, '../public')));
 
 // API routes
 app.use(routes);
+
+// Rate Me API routes (v1)
+import rateMeRoutes from './api/rate-me-routes';
+app.use('/api/v1', rateMeRoutes);
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -82,8 +107,9 @@ async function main(): Promise<void> {
       await migrate();
       console.log('Migrations completed');
 
-      // Start scheduler only if DB is connected
-      console.log('Starting scheduler...');
+      // Start aggregation scheduler only if DB is connected
+      // Note: Data synchronization is handled by rely-lead-processor
+      console.log('Starting metrics aggregation scheduler...');
       const scheduler = new Scheduler();
       scheduler.start();
     } catch (dbError: any) {

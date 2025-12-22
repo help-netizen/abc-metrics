@@ -7,8 +7,14 @@ primary_region = "iad"
 [env]
   MB_JETTY_PORT = "3000"
   MB_JETTY_HOST = "0.0.0.0"
-  MB_DB_TYPE = "h2"
-  MB_DB_FILE = "/metabase-data/metabase.db"
+  MB_DB_TYPE = "postgres"
+  MB_DB_DBNAME = "fly-db"
+  MB_DB_PORT = "5432"
+  MB_DB_USER = "fly-user"
+  MB_DB_PASS = "mJHdkZbWGckg31sOb5RASQo3"
+  MB_DB_HOST = "pgbouncer.9g6y30w2qg60v5ml.flympg.net"
+  JAVA_TIMEZONE = "UTC"
+  JAVA_OPTS = "-Xmx1024m -Xms512m"
 
 [http_service]
   internal_port = 3000
@@ -21,13 +27,6 @@ primary_region = "iad"
 [[vm]]
   cpu_kind = "shared"
   cpus = 1
-  memory_mb = 512
+  memory_mb = 2048
   processes = ["app"]
-
-[mounts]
-  source = "metabase_data"
-  destination = "/metabase-data"
-
-[processes]
-  app = ""
 

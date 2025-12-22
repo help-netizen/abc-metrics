@@ -92,3 +92,4 @@ export DATABASE_URL="postgresql://user:password@host:port/database"
 ### Дублирование данных
 Скрипт использует `ON CONFLICT DO UPDATE`, поэтому повторный запуск обновит существующие записи, а не создаст дубликаты.
 
+

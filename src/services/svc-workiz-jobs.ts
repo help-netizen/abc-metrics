@@ -434,14 +434,70 @@ export class SvcWorkizJobs {
             }
           }
 
+          // Extract new fields from raw_data
+          let serialId: number | null = null;
+          let technicianName: string | null = null;
+          let jobAmountDue: number | null = null;
+          let jobTotalPrice: number | null = null;
+          let jobEndDateTime: Date | null = null;
+          let lastStatusUpdate: Date | null = null;
+
+          if (job.raw_data) {
+            const rawData = job.raw_data as any;
+            
+            // SerialId
+            if (rawData.SerialId !== null && rawData.SerialId !== undefined) {
+              serialId = parseInt(String(rawData.SerialId), 10);
+              if (isNaN(serialId)) serialId = null;
+            }
+
+            // TechnicianName from Team[0].Name
+            if (rawData.Team && Array.isArray(rawData.Team) && rawData.Team.length > 0) {
+              technicianName = rawData.Team[0].Name || null;
+            }
+
+            // JobAmountDue
+            if (rawData.JobAmountDue !== null && rawData.JobAmountDue !== undefined) {
+              jobAmountDue = parseFloat(String(rawData.JobAmountDue));
+              if (isNaN(jobAmountDue)) jobAmountDue = null;
+            }
+
+            // JobTotalPrice
+            if (rawData.JobTotalPrice !== null && rawData.JobTotalPrice !== undefined) {
+              jobTotalPrice = parseFloat(String(rawData.JobTotalPrice));
+              if (isNaN(jobTotalPrice)) jobTotalPrice = null;
+            }
+
+            // JobEndDateTime
+            if (rawData.JobEndDateTime) {
+              const parsedDate = new Date(rawData.JobEndDateTime);
+              if (!isNaN(parsedDate.getTime())) {
+                jobEndDateTime = parsedDate;
+              }
+            }
+
+            // LastStatusUpdate - try different possible field names
+            const statusUpdateValue = rawData.LastStatusUpdate || rawData.LastStatusChange || 
+                                     rawData.StatusUpdate || rawData.status_updated_at ||
+                                     rawData.UpdatedDate || rawData.updated_at;
+            if (statusUpdateValue) {
+              const parsedDate = new Date(statusUpdateValue);
+              if (!isNaN(parsedDate.getTime())) {
+                lastStatusUpdate = parsedDate;
+              }
+            }
+          }
+
           const metaJson = job.raw_data ? JSON.stringify(job.raw_data) : null;
           const createdAt = job.date ? new Date(job.date) : new Date();
 
           await client.query(
             `INSERT INTO fact_jobs (
-              job_id, lead_id, created_at, scheduled_at, source_id, type, client_id, meta
+              job_id, lead_id, created_at, scheduled_at, source_id, type, client_id,
+              serial_id, technician_name, job_amount_due, job_total_price,
+              job_end_date_time, last_status_update, meta
             )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
              ON CONFLICT (job_id) 
              DO UPDATE SET 
                lead_id = EXCLUDED.lead_id,
@@ -450,6 +506,12 @@ export class SvcWorkizJobs {
                source_id = EXCLUDED.source_id,
                type = EXCLUDED.type,
                client_id = EXCLUDED.client_id,
+               serial_id = EXCLUDED.serial_id,
+               technician_name = EXCLUDED.technician_name,
+               job_amount_due = EXCLUDED.job_amount_due,
+               job_total_price = EXCLUDED.job_total_price,
+               job_end_date_time = EXCLUDED.job_end_date_time,
+               last_status_update = EXCLUDED.last_status_update,
                meta = EXCLUDED.meta,
                updated_at_db = CURRENT_TIMESTAMP`,
             [
@@ -460,6 +522,12 @@ export class SvcWorkizJobs {
               sourceId,
               job.type || null,
               clientId,
+              serialId,
+              technicianName,
+              jobAmountDue,
+              jobTotalPrice,
+              jobEndDateTime,
+              lastStatusUpdate,
               metaJson,
             ]
           );

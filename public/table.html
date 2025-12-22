@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ABC Metrics - Table Viewer</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📋 <span id="table-name"></span></h1>
+            <div class="header-actions">
+                <a href="/" class="btn btn-back">← Назад к списку</a>
+                <div id="import-section" style="display: none;">
+                    <input type="file" id="csv-file-input" accept=".csv" style="display: none;">
+                    <button id="import-btn" class="btn btn-import">📥 Импорт CSV</button>
+                </div>
+                <button id="download-csv-btn" class="btn btn-download">📥 Скачать в CSV</button>
+            </div>
+        </header>
+        
+        <div id="loading" class="loading">Загрузка данных...</div>
+        <div id="error" class="error" style="display: none;"></div>
+        
+        <div id="table-info" class="table-info" style="display: none;">
+            <p>Всего строк: <strong id="total-rows">0</strong></p>
+        </div>
+        
+        <div id="table-container" class="table-container" style="display: none;">
+            <div class="table-wrapper">
+                <table id="data-table">
+                    <thead id="table-head">
+                    </thead>
+                    <tbody id="table-body">
+                    </tbody>
+                </table>
+            </div>
+            
+            <div id="pagination" class="pagination" style="display: none;">
+                <button id="prev-page" class="btn btn-prev">← Предыдущая</button>
+                <span id="page-info">Страница 1 из 1</span>
+                <button id="next-page" class="btn btn-next">Следующая →</button>
+            </div>
+        </div>
+    </div>
+    
+    <script src="/app.js"></script>
+</body>
+</html>
+
+
+

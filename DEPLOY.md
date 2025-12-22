@@ -4,15 +4,28 @@
 
 ### 1. Создание PostgreSQL базы данных
 
-```bash
-# Создать PostgreSQL базу данных
-flyctl postgres create --name abc-metrics-db --region iad
+**Использование Fly.io Managed Postgres (рекомендуется):**
 
-# Присоединить базу к приложению
-flyctl postgres attach abc-metrics-db -a abc-metrics
+```bash
+# Создать Managed Postgres кластер
+flyctl mpg create --name abc-metrics-db --region iad --plan development --volume-size 10
+
+# Присоединить базу к приложению (используйте ID кластера из вывода предыдущей команды)
+flyctl mpg attach <CLUSTER_ID> --app abc-metrics
 ```
 
-Это автоматически установит переменную окружения `DATABASE_URL`.
+**Пример:**
+```bash
+# Создание кластера
+flyctl mpg create --name abc-metrics-db --region iad --plan development --volume-size 10
+# Output: ID: q49ypo4w4mpr17ln
+
+# Присоединение (если DATABASE_URL уже установлен, сначала удалите его)
+flyctl secrets unset DATABASE_URL -a abc-metrics
+flyctl mpg attach q49ypo4w4mpr17ln --app abc-metrics
+```
+
+Это автоматически установит переменную окружения `DATABASE_URL` с правильным connection string через PgBouncer.
 
 ### 2. Установка переменных окружения
 
@@ -90,5 +103,50 @@ flyctl ssh console -a abc-metrics
 ```bash
 npm run build
 flyctl deploy -a abc-metrics
+```
+
+## Устранение проблем с SSL сертификатом БД
+
+Если при подключении к PostgreSQL возникает ошибка "self-signed certificate in certificate chain":
+
+### Решение 1: Использование внутреннего подключения (рекомендуется)
+
+Fly.io автоматически предоставляет внутреннее подключение через flycast при использовании `flyctl postgres attach`. Внутренние подключения не требуют SSL, так как трафик остается внутри сети Fly.io.
+
+Убедитесь, что используется команда:
+```bash
+flyctl postgres attach abc-metrics-db -a abc-metrics
+```
+
+Это создаст `DATABASE_URL` с внутренним адресом (flycast или .internal), для которого SSL автоматически отключается.
+
+### Решение 2: Relaxed SSL валидация (для внешних подключений)
+
+Если используется внешнее подключение (например, к Supabase или внешнему PostgreSQL), приложение автоматически использует relaxed SSL валидацию:
+- SSL включен (трафик зашифрован)
+- Проверка цепочки сертификатов отключена (rejectUnauthorized: false)
+- Проверка hostname отключена
+
+Это безопасно, так как трафик все еще зашифрован, но позволяет работать с самоподписанными сертификатами.
+
+### Проверка конфигурации SSL
+
+Логи приложения покажут текущую конфигурацию SSL:
+```
+[SSL Config] Parsing connection: hostname=..., sslmode=...
+[SSL Config] Internal Fly.io host detected, disabling SSL
+или
+[SSL Config] External connection detected, using relaxed SSL
+```
+
+### Ручная настройка SSL режима
+
+Если нужно явно указать SSL режим, добавьте параметр в DATABASE_URL:
+```bash
+# Отключить SSL
+flyctl secrets set DATABASE_URL="postgresql://...?sslmode=disable" -a abc-metrics
+
+# Требовать SSL с relaxed валидацией (по умолчанию для внешних)
+flyctl secrets set DATABASE_URL="postgresql://...?sslmode=require" -a abc-metrics
 ```
 

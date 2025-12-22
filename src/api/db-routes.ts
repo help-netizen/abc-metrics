@@ -794,6 +794,199 @@ router.post('/api/db/elocals_leads', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/db/servicedirect_leads - Save Service Direct leads
+ */
+router.post('/api/db/servicedirect_leads', async (req: Request, res: Response) => {
+  try {
+    const leads = Array.isArray(req.body) ? req.body : [req.body];
+    
+    if (!leads || leads.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No leads provided',
+      });
+    }
+    
+    const client = await pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      let savedCount = 0;
+      const errors: Array<{ lead_id: string; error: string }> = [];
+      
+      for (const lead of leads) {
+        try {
+          // Получаем lead_id (поддерживаем оба формата: с пробелами и snake_case)
+          const leadId = lead['Lead Id'] || lead.lead_id;
+          if (!leadId) {
+            errors.push({ lead_id: 'unknown', error: 'missing Lead Id' });
+            continue;
+          }
+
+          // Парсинг даты из поля Date (формат: "2025-12-17 14:21:00 -0500" или ISO)
+          let leadDate: Date | null = null;
+          let leadTime: Date | null = null;
+          
+          const dateStr = lead['Date'] || lead.date;
+          if (dateStr) {
+            try {
+              let dateToParse: string = String(dateStr).trim();
+              
+              // Пробуем распарсить дату с таймзоной
+              // Формат: "2025-12-17 14:21:00 -0500" или "2025-12-17 14:21:00 +0500"
+              if (dateToParse.includes(' -') || dateToParse.includes(' +')) {
+                // Заменяем пробел перед таймзоной на 'T' для ISO формата
+                // "2025-12-17 14:21:00 -0500" -> "2025-12-17T14:21:00-0500"
+                dateToParse = dateToParse.replace(/\s+(-|\+)/, 'T$1');
+              } else if (dateToParse.includes(' ') && !dateToParse.includes('T')) {
+                // Если есть пробел, но нет T, добавляем T для ISO формата
+                // "2025-12-17 14:21:00" -> "2025-12-17T14:21:00"
+                dateToParse = dateToParse.replace(' ', 'T');
+              }
+              
+              leadTime = new Date(dateToParse);
+              
+              if (!isNaN(leadTime.getTime())) {
+                leadDate = leadTime;
+              } else {
+                leadTime = null;
+              }
+            } catch (e) {
+              // Игнорируем ошибки парсинга
+              console.warn(`Failed to parse date: ${dateStr}`, e);
+            }
+          }
+          
+          // Если дата не распарсилась, используем текущую дату
+          if (!leadDate) {
+            leadDate = new Date();
+            leadTime = leadDate;
+          }
+
+          // Создаем raw_data JSONB со всеми полями
+          const rawData: any = { ...lead };
+
+          // Функция для получения значения (поддерживает оба формата)
+          const getValue = (csvField: string, dbField: string): any => {
+            return lead[csvField] !== undefined ? lead[csvField] : (lead[dbField] !== undefined ? lead[dbField] : null);
+          };
+
+          // Функция для парсинга числовых значений
+          const parseNumeric = (value: any): number | null => {
+            if (value === null || value === undefined || value === '') return null;
+            const parsed = parseFloat(String(value));
+            return isNaN(parsed) ? null : parsed;
+          };
+
+          // Подготовка данных для вставки
+          const insertData = [
+            leadId, // lead_id
+            leadDate.toISOString().split('T')[0], // date
+            leadTime ? leadTime.toISOString() : null, // time
+            getValue('Campaign', 'campaign'), // campaign
+            getValue('Lead Name', 'lead_name'), // lead_name
+            getValue('Lead Phone', 'lead_phone'), // lead_phone
+            getValue('Call Duration', 'call_duration'), // call_duration
+            getValue('Lead Email', 'lead_email'), // lead_email
+            getValue('Form Submission', 'form_submission'), // form_submission
+            getValue('Service Category', 'service_category'), // service_category
+            getValue('Campaign Type', 'campaign_type'), // campaign_type
+            getValue('Billable', 'billable'), // billable
+            getValue('Lead Status', 'lead_status'), // lead_status
+            getValue('Job Status', 'job_status'), // job_status
+            getValue('Need Follow-Up', 'need_follow_up'), // need_follow_up
+            getValue('Call Answered', 'call_answered'), // call_answered
+            getValue('Booked Appointment', 'booked_appointment'), // booked_appointment
+            getValue('Lost Reasons', 'lost_reasons'), // lost_reasons
+            getValue('Under Review', 'under_review'), // under_review
+            parseNumeric(getValue('Revenue', 'revenue')), // revenue
+            parseNumeric(getValue('Cost', 'cost')), // cost
+            getValue('Address', 'address'), // address
+            getValue('Unit', 'unit'), // unit
+            getValue('City', 'city'), // city
+            getValue('State', 'state'), // state
+            getValue('Zip Code', 'zip_code'), // zip_code
+            rawData, // raw_data (JSONB)
+          ];
+          
+          await client.query(
+            `INSERT INTO servicedirect_leads (
+              lead_id, date, time, campaign, lead_name, lead_phone, call_duration,
+              lead_email, form_submission, service_category, campaign_type, billable,
+              lead_status, job_status, need_follow_up, call_answered, booked_appointment,
+              lost_reasons, under_review, revenue, cost, address, unit, city, state, zip_code, raw_data
+            )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
+             ON CONFLICT (lead_id) 
+             DO UPDATE SET 
+               date = EXCLUDED.date,
+               time = EXCLUDED.time,
+               campaign = EXCLUDED.campaign,
+               lead_name = EXCLUDED.lead_name,
+               lead_phone = EXCLUDED.lead_phone,
+               call_duration = EXCLUDED.call_duration,
+               lead_email = EXCLUDED.lead_email,
+               form_submission = EXCLUDED.form_submission,
+               service_category = EXCLUDED.service_category,
+               campaign_type = EXCLUDED.campaign_type,
+               billable = EXCLUDED.billable,
+               lead_status = EXCLUDED.lead_status,
+               job_status = EXCLUDED.job_status,
+               need_follow_up = EXCLUDED.need_follow_up,
+               call_answered = EXCLUDED.call_answered,
+               booked_appointment = EXCLUDED.booked_appointment,
+               lost_reasons = EXCLUDED.lost_reasons,
+               under_review = EXCLUDED.under_review,
+               revenue = EXCLUDED.revenue,
+               cost = EXCLUDED.cost,
+               address = EXCLUDED.address,
+               unit = EXCLUDED.unit,
+               city = EXCLUDED.city,
+               state = EXCLUDED.state,
+               zip_code = EXCLUDED.zip_code,
+               raw_data = EXCLUDED.raw_data,
+               updated_at = CURRENT_TIMESTAMP`,
+            insertData
+          );
+          
+          savedCount++;
+        } catch (error: any) {
+          const leadId = lead['Lead Id'] || lead.lead_id || 'unknown';
+          errors.push({ lead_id: String(leadId), error: error.message });
+          console.error(`Error saving Service Direct lead ${leadId}:`, error);
+        }
+      }
+      
+      await client.query('COMMIT');
+      
+      const message = errors.length > 0
+        ? `Successfully saved ${savedCount} Service Direct lead(s), ${errors.length} error(s)`
+        : `Successfully saved ${savedCount} Service Direct lead(s)`;
+      
+      res.json({
+        success: true,
+        count: savedCount,
+        errors: errors.length > 0 ? errors : undefined,
+        message,
+      });
+    } catch (error: any) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  } catch (error: any) {
+    console.error('Error saving Service Direct leads:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Internal server error',
+      message: error.message 
+    });
+  }
+});
+
+/**
  * POST /api/db/batch - Batch write (transactional)
  */
 router.post('/api/db/batch', async (req: Request, res: Response) => {

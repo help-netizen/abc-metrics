@@ -42,14 +42,21 @@
       "call_id": "32420419",
       "date": "2025-12-05",
       "duration": 143,
-      "call_type": "Request Credit",
+      "call_type": "Credit Unavailable",
       "source": "elocals"
     },
     {
       "call_id": "32419351",
       "date": "2025-12-05",
       "duration": 233,
-      "call_type": "Request Credit",
+      "call_type": "Credit Unavailable",
+      "source": "elocals"
+    },
+    {
+      "call_id": "32406338",
+      "date": "2025-12-04",
+      "duration": 182,
+      "call_type": "Call Credited (No Charge)",
       "source": "elocals"
     }
   ]
@@ -80,13 +87,17 @@
 | `call_id` | string | Уникальный идентификатор звонка из elocal.com | `"32420419"` |
 | `date` | string | Дата звонка в формате `YYYY-MM-DD` | `"2025-12-05"` |
 | `duration` | number (optional) | Длительность звонка в секундах | `143` |
-| `call_type` | string (optional) | Тип/статус звонка | `"Request Credit"` |
+| `call_type` | string (optional) | Тип/статус звонка | `"Credit Unavailable"` |
 | `source` | string | Источник данных (всегда `"elocals"`) | `"elocals"` |
 
 **Примечания:**
 - `duration` конвертируется из формата `MM:SS` в секунды (например, `"02:23"` → `143`)
 - `call_type` может быть `null` или отсутствовать для некоторых записей
 - `date` нормализуется из различных форматов в стандартный `YYYY-MM-DD`
+- **Возможные значения `call_type`:**
+  - `"Credit Unavailable"` - кредит недоступен
+  - `"Call Credited (No Charge)"` - звонок засчитан без оплаты
+  - Другие типы могут встречаться в зависимости от данных elocal.com
 
 ---
 
@@ -218,12 +229,13 @@ const defaultResponse = await axios.get('http://localhost:3001/api/calls/elocal'
 
 ### Performance
 
-- **Время выполнения:** ~60-80 секунд (зависит от количества данных и скорости сети)
+- **Время выполнения:** ~30-90 секунд (зависит от количества данных и скорости сети)
 - **Процесс:** Использует Puppeteer для автоматизации браузера, что требует времени на:
-  - Запуск браузера (~5-10 секунд)
-  - Аутентификацию (~60-70 секунд)
-  - Загрузку CSV (~0.5-1 секунда)
+  - Запуск браузера (~5-15 секунд при первом запросе, ~1-2 секунды при повторном использовании)
+  - Аутентификацию (~20-60 секунд)
+  - Загрузку CSV (~1-3 секунды)
   - Парсинг данных (~0.1 секунда)
+- **Оптимизация:** Браузер переиспользуется между запросами в рамках одного процесса
 
 ### Rate Limiting
 
@@ -267,10 +279,6 @@ const defaultResponse = await axios.get('http://localhost:3001/api/calls/elocal'
 - `/api/calls` - возвращает данные из локальной базы данных (быстро, но данные могут быть устаревшими)
 - `/api/calls/elocal` - извлекает данные напрямую из elocal.com (медленнее, но всегда актуальные данные)
 
-### Difference from `/api/test/elocal/calls/sync`
-
-- `/api/test/elocal/calls/sync` - выполняет полную синхронизацию (извлечение + сохранение в БД)
-- `/api/calls/elocal` - только извлечение без сохранения
 
 ---
 
@@ -308,4 +316,5 @@ const defaultResponse = await axios.get('http://localhost:3001/api/calls/elocal'
 2. Убедитесь, что переменные окружения `ELOCAL_USERNAME` и `ELOCAL_PASSWORD` установлены
 3. Проверьте доступность elocal.com
 4. Убедитесь, что Puppeteer установлен и Chrome доступен
+
 
