@@ -6,6 +6,17 @@ export class NormalizationService {
     static phone(phone: string | null | undefined): string | null {
         if (!phone) return null;
 
+        // Convert to string if it's a number
+        if (typeof phone === 'number') {
+            phone = String(phone);
+        }
+
+        // If it's not a string (e.g., array or object), return null
+        if (typeof phone !== 'string') {
+            console.warn('Phone field is not a string:', typeof phone, phone);
+            return null;
+        }
+
         // Remove all non-digit characters
         let digits = phone.replace(/\D/g, '');
 
@@ -70,6 +81,40 @@ export class NormalizationService {
         const isoString = this.dateTime(input);
         if (!isoString) return null;
         return isoString.split('T')[0];
+    }
+
+    /**
+     * List of common keys that usually contain phone numbers in our system.
+     */
+    static readonly PHONE_KEYS = [
+        'Phone', 'SecondPhone', 'client_phone', 'Lead Phone', 'From number', 'To number',
+        'Forwarding Number', 'Caller ID', 'Contact Phone Number', 'Contact Cell Phone Number',
+        'customer_phone', 'recipient_phone', 'lead_phone', 'phone', 'mobile', 'tel',
+        'forwarding_number', 'caller_id', 'contact_phone', 'contact_cell_phone'
+    ];
+
+    /**
+     * Normalize phone fields within a JSON object (mutate the object).
+     */
+    static normalizeObjectPhoneFields(obj: any): any {
+        if (!obj || typeof obj !== 'object') return obj;
+
+        for (const key in obj) {
+            if (Object.prototype.hasOwnProperty.call(obj, key)) {
+                const value = obj[key];
+
+                // If key is a known phone key and value is a string, normalize it
+                if (this.PHONE_KEYS.includes(key) && typeof value === 'string') {
+                    obj[key] = this.phone(value);
+                }
+                // If value is an object or array, recurse
+                else if (value && typeof value === 'object') {
+                    this.normalizeObjectPhoneFields(value);
+                }
+            }
+        }
+
+        return obj;
     }
 
     /**

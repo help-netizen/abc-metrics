@@ -794,3 +794,4 @@ dim_date (d) → используется для календарных джой
 2. Проверить логи приложения: `flyctl logs -a abc-metrics`
 3. Проверить статус базы данных: `flyctl mpg status -a abc-metrics`
 
+

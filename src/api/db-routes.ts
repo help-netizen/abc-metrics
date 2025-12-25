@@ -536,17 +536,66 @@ router.post('/api/db/leads', async (req: Request, res: Response) => {
 
     const svcWorkizLeads = new SvcWorkizLeads();
 
-    // Convert API format to WorkizLead format
+    // Convert API format to WorkizLead format (extended per REQ-022)
     const workizLeads = leads.map((lead: any) => ({
       id: lead.lead_id || lead.id,
-      source: lead.source || 'workiz',
-      status: lead.status,
+
+      // Basic Lead Information (source_id will be resolved by saveLeads)
+      serial_id: lead.serial_id,
       created_at: NormalizationService.dateTime(lead.created_at || new Date()) || new Date().toISOString(),
       updated_at: NormalizationService.dateTime(lead.updated_at || lead.created_at || new Date()) || new Date().toISOString(),
-      job_id: lead.job_id,
+      lead_date_time: NormalizationService.dateTime(lead.lead_date_time) || undefined,
+      lead_end_date_time: NormalizationService.dateTime(lead.lead_end_date_time) || undefined,
+      last_status_update: NormalizationService.dateTime(lead.last_status_update) || undefined,
+
+      // Status
+      status: lead.status,
+      sub_status: lead.sub_status,
+
+      // Contact Information (normalized)
+      phone: NormalizationService.phone(lead.phone) || undefined,
+      second_phone: NormalizationService.phone(lead.second_phone) || undefined,
+      phone_ext: lead.phone_ext,
+      second_phone_ext: lead.second_phone_ext,
+      email: lead.email,
+      first_name: lead.first_name,
+      last_name: lead.last_name,
+      company: lead.company,
+      client_name: lead.client_name || lead.name ||
+        (lead.first_name && lead.last_name ? `${lead.first_name} ${lead.last_name}`.trim() : undefined),
       client_phone: NormalizationService.phone(lead.client_phone || lead.phone) || undefined,
-      client_name: lead.client_name || lead.name,
-      raw_data: lead.raw_data || lead.meta,
+
+      // Address Information (normalized)
+      address: lead.address,
+      city: lead.city,
+      state: lead.state,
+      postal_code: NormalizationService.zip(lead.postal_code) || undefined,
+      country: lead.country,
+      latitude: lead.latitude,
+      longitude: lead.longitude,
+      unit: lead.unit,
+
+      // Lead Details
+      job_type: lead.job_type,
+      job_source: lead.job_source,
+      referral_company: lead.referral_company,
+      service_area: lead.service_area,
+      timezone: lead.timezone,
+      created_by: lead.created_by,
+      notes: lead.notes,
+      comments: lead.comments,
+
+      // Relationships
+      job_id: lead.job_id,
+
+      // Metadata (JSONB)
+      tags: lead.tags,
+      team: lead.team,
+      meta: lead.meta,
+
+      // Legacy fields (backward compatibility)
+      source: lead.source || 'workiz',
+      raw_data: lead.raw_data || lead.meta, // Deprecated: use meta
     }));
 
     await svcWorkizLeads.saveLeads(workizLeads);
@@ -676,8 +725,8 @@ router.post('/api/db/elocals_leads', async (req: Request, res: Response) => {
             leadDate = new Date();
           }
 
-          // Создаем raw_data JSONB со всеми полями
-          const rawData: any = { ...lead };
+          // Создаем raw_data JSONB со всеми полями и нормализуем телефоны в нем
+          const rawData = NormalizationService.normalizeObjectPhoneFields({ ...lead });
 
           // Нормализация данных
           const normalizedDate = NormalizationService.date(leadDate);
@@ -875,8 +924,8 @@ router.post('/api/db/servicedirect_leads', async (req: Request, res: Response) =
             leadTime = leadDate;
           }
 
-          // Создаем raw_data JSONB со всеми полями
-          const rawData: any = { ...lead };
+          // Создаем raw_data JSONB со всеми полями и нормализуем телефоны в нем
+          const rawData = NormalizationService.normalizeObjectPhoneFields({ ...lead });
 
           // Функция для получения значения (поддерживает оба формата)
           const getValue = (csvField: string, dbField: string): any => {

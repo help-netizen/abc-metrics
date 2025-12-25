@@ -180,17 +180,23 @@ router.get('/api/table/:tableName', async (req: Request, res: Response) => {
       let regularColumns = columns.filter(col => !endColumns.includes(col));
       const endColumnsFiltered = endColumns.filter(col => columns.includes(col));
 
-      // Reorder: put Status immediately after Type
+      // Find type column and insert JobSource after it
       const typeIndex = regularColumns.findIndex(col => col.toLowerCase() === 'type');
-      const statusIndex = regularColumns.findIndex(col => col.toLowerCase() === 'status');
+      if (typeIndex !== -1) {
+        regularColumns.splice(typeIndex + 1, 0, 'JobSource');
+      }
 
-      if (typeIndex !== -1 && statusIndex !== -1 && statusIndex !== typeIndex + 1) {
+      // Reorder: put Status after JobSource (if it exists)
+      const statusIndex = regularColumns.findIndex(col => col.toLowerCase() === 'status');
+      const jobSourceIndex = regularColumns.findIndex(col => col === 'JobSource');
+
+      if (statusIndex !== -1 && jobSourceIndex !== -1 && statusIndex !== jobSourceIndex + 1) {
         // Get the status column name
         const statusColumn = regularColumns[statusIndex];
         // Remove status from its current position
         regularColumns = regularColumns.filter((_, idx) => idx !== statusIndex);
-        // Insert status right after type
-        regularColumns.splice(typeIndex + 1, 0, statusColumn);
+        // Insert status right after JobSource
+        regularColumns.splice(jobSourceIndex + 1, 0, statusColumn);
       }
 
       // Reorder: regular columns first, then end columns
@@ -249,6 +255,17 @@ router.get('/api/table/:tableName', async (req: Request, res: Response) => {
         }
       }
 
+      selectColumns = selectParts.join(', ');
+    } else if (tableName === 'fact_jobs') {
+      // For fact_jobs, extract JobSource from meta JSONB
+      const selectParts: string[] = [];
+      for (const col of columns) {
+        if (col === 'JobSource') {
+          selectParts.push(`meta->>'JobSource' AS "JobSource"`);
+        } else {
+          selectParts.push(`"${col}"`);
+        }
+      }
       selectColumns = selectParts.join(', ');
     } else {
       // For other tables, quote column names
@@ -346,7 +363,23 @@ router.get('/api/table/:tableName/csv', async (req: Request, res: Response) => {
     } else if (tableName === 'fact_jobs') {
       // Exclude created_at and scheduled_at for consistency with view
       finalColumns = columns.filter(col => col !== 'created_at' && col !== 'scheduled_at');
-      selectColumns = finalColumns.map(col => `"${col}"`).join(', ');
+
+      // Add JobSource column after type
+      const typeIndex = finalColumns.findIndex(col => col.toLowerCase() === 'type');
+      if (typeIndex !== -1 && !finalColumns.includes('JobSource')) {
+        finalColumns.splice(typeIndex + 1, 0, 'JobSource');
+      }
+
+      // Build select with JobSource extraction from meta
+      const selectParts: string[] = [];
+      for (const col of finalColumns) {
+        if (col === 'JobSource') {
+          selectParts.push(`meta->>'JobSource' AS "JobSource"`);
+        } else {
+          selectParts.push(`"${col}"`);
+        }
+      }
+      selectColumns = selectParts.join(', ');
     } else {
       selectColumns = columns.map(col => `"${col}"`).join(', ');
     }
@@ -579,6 +612,54 @@ function parseDuration(durationStr: string | undefined): number | null {
 }
 
 /**
+ * DELETE all records from fact_jobs table
+ * WARNING: This is a destructive operation!
+ */
+router.delete('/api/db/jobs/delete-all', async (req: Request, res: Response) => {
+  try {
+    const result = await pool.query('DELETE FROM fact_jobs');
+
+    res.json({
+      success: true,
+      message: `Successfully deleted ${result.rowCount} records from fact_jobs`,
+      deletedCount: result.rowCount
+    });
+  } catch (error: any) {
+    console.error('Error deleting all jobs:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+
+/**
+ * DELETE all records from fact_leads table
+ * WARNING: This is a destructive operation!
+ */
+router.delete('/api/db/leads/delete-all', async (req: Request, res: Response) => {
+  try {
+    const result = await pool.query('DELETE FROM fact_leads');
+
+    res.json({
+      success: true,
+      message: `Successfully deleted ${result.rowCount} records from fact_leads`,
+      deletedCount: result.rowCount
+    });
+  } catch (error: any) {
+    console.error('Error deleting all leads:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+
+/**
  * Send progress update to client
  */
 function sendProgress(res: Response, percent: number, message: string) {
@@ -657,50 +738,71 @@ router.post('/api/import/jobs-csv', upload.single('csv'), async (req: Request, r
           const scheduledDate = NormalizationService.dateTime(parseDate(record['Job Date']));
           const jobEndDate = NormalizationService.dateTime(parseDate(record['Job End']));
           const lastStatusUpdate = NormalizationService.dateTime(parseDate(record['Conversion Date']));
+          const paymentDueDate = NormalizationService.dateTime(parseDate(record['Payment Due Date']));
 
           // Parse numeric values
           const serialId = parseIntValue(record['Job #']);
           const jobAmountDue = parseNumeric(record['Amount Due']);
           const jobTotalPrice = parseNumeric(record.Total);
+          const subTotal = parseNumeric(record.Total); // Using Total as sub_total
+          const itemCost = parseNumeric(record.Cost);
+          const techCost = null; // Not available in CSV
+
+          // Extract contact information
+          const phone = NormalizationService.phone(record['Primary Phone']);
+          const secondPhone = null; // Not in CSV
+          const phoneExt = null;
+          const secondPhoneExt = null;
+          const email = record['Email Address']?.trim() || null;
+          const firstName = record['First Name']?.trim() || null;
+          const lastName = record['Last Name']?.trim() || null;
+          const company = record.Company?.trim() || null;
+
+          // Extract address information
+          const address = record.Address?.trim() || null;
+          const city = record.City?.trim() || null;
+          const state = record.State?.trim() || null;
+          const postalCode = NormalizationService.zip(record['Zip Code']);
+          const country = null; // Not in CSV
+          const latitude = null;
+          const longitude = null;
+
+          // Extract job details
           const technicianName = record.Tech?.trim() || null;
           const jobType = record['Job Type']?.trim() || null;
           const clientId = record['Job #']?.trim() || null;
+          const subStatus = record['Sub-Status']?.trim() || null;
+          const jobNotes = record['Claim ID and Important notes']?.trim() || null;
+          const comments = record['Issue description']?.trim() || null;
+          const timezone = null; // Not in CSV
+          const referralCompany = null; // Not in CSV
+          const serviceArea = record['Service Area']?.trim() || null;
+          const createdBy = record['Created By']?.trim() || null;
 
-          // Build meta JSONB object with all additional data
+          // Parse tags as JSONB array
+          const tagsStr = record.Tags?.trim();
+          const tags = tagsStr ? JSON.stringify(tagsStr.split(',').map((t: string) => t.trim())) : null;
+          const team = null; // Not in CSV
+
+          // Build meta JSONB object with all remaining data
           const meta: any = {
-            client: record.Client?.trim() || null,
-            tags: record.Tags?.trim() || null,
-            primaryPhone: NormalizationService.phone(record['Primary Phone']),
-            emailAddress: record['Email Address']?.trim() || null,
-            status: record.Status?.trim() || null,
-            subStatus: record['Sub-Status']?.trim() || null,
-            address: record.Address?.trim() || null,
-            city: record.City?.trim() || null,
-            zipCode: NormalizationService.zip(record['Zip Code']),
-            state: record.State?.trim() || null,
-            serviceArea: record['Service Area']?.trim() || null,
-            converted: record.Converted?.trim() || null,
-            invoiced: record.Invoiced?.trim() || null,
-            paymentDueDate: record['Payment Due Date']?.trim() || null,
-            createdBy: record['Created By']?.trim() || null,
-            amountPaid: parseNumeric(record['Amount Paid']),
-            cost: parseNumeric(record.Cost),
-            profit: parseNumeric(record.Profit),
-            profitMargin: parseNumeric(record['Profit Margin']),
-            company: record.Company?.trim() || null,
-            tax: parseNumeric(record.Tax),
-            creditCardServiceFee: parseNumeric(record['Credit Card Service Fee']),
-            taxableAmount: parseNumeric(record['Taxable Amount']),
-            taxRate: parseNumeric(record['Tax Rate']),
-            hours: parseNumeric(record.Hours),
-            firstName: record['First Name']?.trim() || null,
-            lastName: record['Last Name']?.trim() || null,
-            paymentMethods: record['Payment Methods']?.trim() || null,
-            claimIdAndImportantNotes: record['Claim ID and Important notes']?.trim() || null,
-            applianceTypeAndBrand: record['Appliance type and Brand']?.trim() || null,
-            issueDescription: record['Issue description']?.trim() || null,
-            expenses: parseNumeric(record.Expenses),
-            firstTimeNotice: record['First time notice']?.trim() || null,
+            JobSource: sourceCode,
+            Client: record.Client?.trim() || null,
+            Status: record.Status?.trim() || null,
+            Converted: record.Converted?.trim() || null,
+            Invoiced: record.Invoiced?.trim() || null,
+            AmountPaid: parseNumeric(record['Amount Paid']),
+            Profit: parseNumeric(record.Profit),
+            ProfitMargin: parseNumeric(record['Profit Margin']),
+            Tax: parseNumeric(record.Tax),
+            CreditCardServiceFee: parseNumeric(record['Credit Card Service Fee']),
+            TaxableAmount: parseNumeric(record['Taxable Amount']),
+            TaxRate: parseNumeric(record['Tax Rate']),
+            Hours: parseNumeric(record.Hours),
+            PaymentMethods: record['Payment Methods']?.trim() || null,
+            ApplianceTypeAndBrand: record['Appliance type and Brand']?.trim() || null,
+            Expenses: parseNumeric(record.Expenses),
+            FirstTimeNotice: record['First time notice']?.trim() || null,
           };
 
           // Remove null values from meta to keep it clean
@@ -712,14 +814,19 @@ router.post('/api/import/jobs-csv', upload.single('csv'), async (req: Request, r
 
           const createdAt = createdDate || new Date();
 
-          // Insert or update job in fact_jobs
+          // Insert or update job in fact_jobs with all fields
           await client.query(
             `INSERT INTO fact_jobs (
               job_id, lead_id, created_at, scheduled_at, source_id, type, client_id,
               serial_id, technician_name, job_amount_due, job_total_price,
-              job_end_date_time, last_status_update, meta
+              job_end_date_time, last_status_update,
+              phone, second_phone, phone_ext, second_phone_ext, email, first_name, last_name, company,
+              address, city, state, postal_code, country, latitude, longitude,
+              sub_total, item_cost, tech_cost, sub_status, payment_due_date,
+              job_notes, comments, timezone, referral_company, service_area, created_by,
+              tags, team, meta
             )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42)
              ON CONFLICT (job_id) 
              DO UPDATE SET 
                lead_id = EXCLUDED.lead_id,
@@ -734,6 +841,34 @@ router.post('/api/import/jobs-csv', upload.single('csv'), async (req: Request, r
                job_total_price = EXCLUDED.job_total_price,
                job_end_date_time = EXCLUDED.job_end_date_time,
                last_status_update = EXCLUDED.last_status_update,
+               phone = EXCLUDED.phone,
+               second_phone = EXCLUDED.second_phone,
+               phone_ext = EXCLUDED.phone_ext,
+               second_phone_ext = EXCLUDED.second_phone_ext,
+               email = EXCLUDED.email,
+               first_name = EXCLUDED.first_name,
+               last_name = EXCLUDED.last_name,
+               company = EXCLUDED.company,
+               address = EXCLUDED.address,
+               city = EXCLUDED.city,
+               state = EXCLUDED.state,
+               postal_code = EXCLUDED.postal_code,
+               country = EXCLUDED.country,
+               latitude = EXCLUDED.latitude,
+               longitude = EXCLUDED.longitude,
+               sub_total = EXCLUDED.sub_total,
+               item_cost = EXCLUDED.item_cost,
+               tech_cost = EXCLUDED.tech_cost,
+               sub_status = EXCLUDED.sub_status,
+               payment_due_date = EXCLUDED.payment_due_date,
+               job_notes = EXCLUDED.job_notes,
+               comments = EXCLUDED.comments,
+               timezone = EXCLUDED.timezone,
+               referral_company = EXCLUDED.referral_company,
+               service_area = EXCLUDED.service_area,
+               created_by = EXCLUDED.created_by,
+               tags = EXCLUDED.tags,
+               team = EXCLUDED.team,
                meta = EXCLUDED.meta,
                updated_at_db = CURRENT_TIMESTAMP`,
             [
@@ -750,6 +885,34 @@ router.post('/api/import/jobs-csv', upload.single('csv'), async (req: Request, r
               jobTotalPrice,
               jobEndDate,
               lastStatusUpdate,
+              phone,
+              secondPhone,
+              phoneExt,
+              secondPhoneExt,
+              email,
+              firstName,
+              lastName,
+              company,
+              address,
+              city,
+              state,
+              postalCode,
+              country,
+              latitude,
+              longitude,
+              subTotal,
+              itemCost,
+              techCost,
+              subStatus,
+              paymentDueDate,
+              jobNotes,
+              comments,
+              timezone,
+              referralCompany,
+              serviceArea,
+              createdBy,
+              tags,
+              team,
               JSON.stringify(meta),
             ]
           );

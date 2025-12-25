@@ -314,10 +314,14 @@ async function loadTable() {
                 const th = document.createElement('th');
                 th.textContent = column;
                 th.style.cursor = 'pointer';
-                th.style.userSelect = 'none';
                 th.title = 'Кликните для сортировки';
 
-                th.addEventListener('click', () => {
+                th.addEventListener('click', (e) => {
+                    // Если пользователь выделил текст, не сортируем
+                    const selection = window.getSelection();
+                    if (selection.toString().length > 0) {
+                        return;
+                    }
                     // Определяем направление сортировки
                     if (currentData.sortColumn === columnIndex) {
                         // Переключаем направление если клик на тот же столбец

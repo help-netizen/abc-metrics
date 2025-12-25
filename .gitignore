@@ -6,4 +6,8 @@ dist/
 *.swp
 *.swo
 *~
+*.csv
+Explore-logs-*.txt
+fact_jobs_*.json
+columns.json
 

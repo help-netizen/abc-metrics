@@ -210,7 +210,7 @@ async function importCsvJobs(csvFilePath: string): Promise<void> {
 
     for (let i = 0; i < records.length; i++) {
       const record = records[i];
-      
+
       try {
         // UUID is required (it's the primary key)
         const uuid = record.UUID?.trim();
@@ -242,7 +242,7 @@ async function importCsvJobs(csvFilePath: string): Promise<void> {
         const jobTotalPrice = parseNumeric(record.Total);
         const technicianName = record.Tech?.trim() || null;
         const jobType = record['Job Type']?.trim() || null;
-        const clientId = record['Job #']?.trim() || null; // Using Job # as client_id if needed
+        const clientId = null; // CSV doesn't have a unique Client ID column, only name
 
         // Build meta JSONB object with all additional data
         const meta: any = {
@@ -290,14 +290,25 @@ async function importCsvJobs(csvFilePath: string): Promise<void> {
 
         const createdAt = createdDate || new Date();
 
+        const total = parseNumeric(record.Total) || 0;
+        const tax = parseNumeric(record.Tax) || 0;
+        const subTotal = total - tax;
+        const itemCost = parseNumeric(record.Cost) || 0;
+
         // Insert or update job in fact_jobs
         await client.query(
           `INSERT INTO fact_jobs (
             job_id, lead_id, created_at, scheduled_at, source_id, type, client_id,
             serial_id, technician_name, job_amount_due, job_total_price,
-            job_end_date_time, last_status_update, meta
+            job_end_date_time, last_status_update,
+            phone, second_phone, phone_ext, second_phone_ext, email, 
+            first_name, last_name, company, address, city, state, postal_code, 
+            country, latitude, longitude,
+            sub_total, item_cost, tech_cost, sub_status, payment_due_date,
+            job_notes, comments, timezone, referral_company, service_area, created_by,
+            tags, team, meta, import_source
           )
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43)
            ON CONFLICT (job_id) 
            DO UPDATE SET 
              lead_id = EXCLUDED.lead_id,
@@ -312,28 +323,86 @@ async function importCsvJobs(csvFilePath: string): Promise<void> {
              job_total_price = EXCLUDED.job_total_price,
              job_end_date_time = EXCLUDED.job_end_date_time,
              last_status_update = EXCLUDED.last_status_update,
+             phone = EXCLUDED.phone,
+             second_phone = EXCLUDED.second_phone,
+             phone_ext = EXCLUDED.phone_ext,
+             second_phone_ext = EXCLUDED.second_phone_ext,
+             email = EXCLUDED.email,
+             first_name = EXCLUDED.first_name,
+             last_name = EXCLUDED.last_name,
+             company = EXCLUDED.company,
+             address = EXCLUDED.address,
+             city = EXCLUDED.city,
+             state = EXCLUDED.state,
+             postal_code = EXCLUDED.postal_code,
+             country = EXCLUDED.country,
+             latitude = EXCLUDED.latitude,
+             longitude = EXCLUDED.longitude,
+             sub_total = EXCLUDED.sub_total,
+             item_cost = EXCLUDED.item_cost,
+             tech_cost = EXCLUDED.tech_cost,
+             sub_status = EXCLUDED.sub_status,
+             payment_due_date = EXCLUDED.payment_due_date,
+             job_notes = EXCLUDED.job_notes,
+             comments = EXCLUDED.comments,
+             timezone = EXCLUDED.timezone,
+             referral_company = EXCLUDED.referral_company,
+             service_area = EXCLUDED.service_area,
+             created_by = EXCLUDED.created_by,
+             tags = EXCLUDED.tags,
+             team = EXCLUDED.team,
              meta = EXCLUDED.meta,
+             import_source = EXCLUDED.import_source,
              updated_at_db = CURRENT_TIMESTAMP`,
           [
-            uuid,                    // job_id (UUID)
-            null,                    // lead_id (not available in CSV)
-            createdAt,               // created_at
-            scheduledDate,           // scheduled_at
-            sourceId,               // source_id
-            jobType,                // type
-            clientId,               // client_id
-            serialId,               // serial_id
-            technicianName,         // technician_name
-            jobAmountDue,           // job_amount_due
-            jobTotalPrice,          // job_total_price
-            jobEndDate,             // job_end_date_time
-            lastStatusUpdate,       // last_status_update
-            JSON.stringify(meta),   // meta
+            uuid,                    // $1 
+            null,                    // $2 (lead_id)
+            createdAt,               // $3
+            scheduledDate,           // $4
+            sourceId,                // $5
+            jobType,                 // $6
+            clientId,                // $7
+            serialId,                // $8
+            technicianName,          // $9
+            jobAmountDue,            // $10
+            total,                   // $11 (job_total_price)
+            jobEndDate,              // $12
+            lastStatusUpdate,        // $13
+            record['Primary Phone']?.trim() || null, // $14 (phone)
+            null,                    // $15 (second_phone)
+            null,                    // $16 (phone_ext)
+            null,                    // $17 (second_phone_ext)
+            record['Email Address']?.trim() || null, // $18 (email)
+            record['First Name']?.trim() || null,    // $19 (first_name)
+            record['Last Name']?.trim() || null,     // $20 (last_name)
+            record.Company?.trim() || null,          // $21 (company)
+            record.Address?.trim() || null,          // $22 (address)
+            record.City?.trim() || null,             // $23 (city)
+            record.State?.trim() || null,            // $24 (state)
+            record['Zip Code']?.trim() || null,      // $25 (postal_code)
+            'USA',                   // $26 (country)
+            null,                    // $27 (latitude)
+            null,                    // $28 (longitude)
+            subTotal,                // $29 (sub_total)
+            itemCost,                // $30 (item_cost)
+            null,                    // $31 (tech_cost)
+            record['Sub-Status']?.trim() || null,     // $32 (sub_status)
+            parseDate(record['Payment Due Date']),    // $33 (payment_due_date)
+            record['Claim ID and Important notes']?.trim() || null, // $34 (job_notes)
+            record['Issue description']?.trim() || null,            // $35 (comments)
+            null,                    // $36 (timezone)
+            null,                    // $37 (referral_company)
+            record['Service Area']?.trim() || null,  // $38 (service_area)
+            record['Created By']?.trim() || null,    // $39 (created_by)
+            record.Tags?.trim() || null,              // $40 (tags)
+            null,                    // $41 (team)
+            JSON.stringify(meta),    // $42 (meta)
+            'csv'                    // $43 (import_source)
           ]
         );
 
         savedCount++;
-        
+
         if (savedCount % 100 === 0) {
           console.log(`Progress: ${savedCount}/${records.length} jobs imported...`);
         }
@@ -351,7 +420,7 @@ async function importCsvJobs(csvFilePath: string): Promise<void> {
     console.log(`Total records: ${records.length}`);
     console.log(`Successfully imported: ${savedCount}`);
     console.log(`Skipped: ${skippedCount}`);
-    
+
     if (errors.length > 0) {
       console.log(`\nErrors (first 10):`);
       errors.slice(0, 10).forEach(({ uuid, error }) => {
@@ -375,8 +444,8 @@ async function main() {
   const csvFilePath = process.argv[2] || 'Import-2025-12-16T13_58_55.706Z.csv';
 
   // Resolve path relative to current working directory
-  const resolvedPath = path.isAbsolute(csvFilePath) 
-    ? csvFilePath 
+  const resolvedPath = path.isAbsolute(csvFilePath)
+    ? csvFilePath
     : path.join(process.cwd(), csvFilePath);
 
   if (!fs.existsSync(resolvedPath)) {

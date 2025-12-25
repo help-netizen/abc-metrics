@@ -1122,8 +1122,360 @@ async function migrate() {
       console.log('Migration 12 completed');
     }
 
+    // ========== MIGRATION 13: Add all Workiz job fields to fact_jobs ==========
+    if (!(await isMigrationApplied(13))) {
+      console.log('Applying migration 13: Add all Workiz job fields to fact_jobs...');
+
+      const existingColumnsResult = await client.query(`
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_schema = 'public' 
+        AND table_name = 'fact_jobs'
+      `);
+      const existingColumns = existingColumnsResult.rows.map(row => row.column_name);
+
+      // Contact Information
+      if (!existingColumns.includes('phone')) {
+        console.log('Adding column: phone');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN phone TEXT');
+      }
+      if (!existingColumns.includes('second_phone')) {
+        console.log('Adding column: second_phone');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN second_phone TEXT');
+      }
+      if (!existingColumns.includes('phone_ext')) {
+        console.log('Adding column: phone_ext');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN phone_ext TEXT');
+      }
+      if (!existingColumns.includes('second_phone_ext')) {
+        console.log('Adding column: second_phone_ext');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN second_phone_ext TEXT');
+      }
+      if (!existingColumns.includes('email')) {
+        console.log('Adding column: email');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN email TEXT');
+      }
+      if (!existingColumns.includes('first_name')) {
+        console.log('Adding column: first_name');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN first_name TEXT');
+      }
+      if (!existingColumns.includes('last_name')) {
+        console.log('Adding column: last_name');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN last_name TEXT');
+      }
+      if (!existingColumns.includes('company')) {
+        console.log('Adding column: company');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN company TEXT');
+      }
+
+      // Address Information
+      if (!existingColumns.includes('address')) {
+        console.log('Adding column: address');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN address TEXT');
+      }
+      if (!existingColumns.includes('city')) {
+        console.log('Adding column: city');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN city TEXT');
+      }
+      if (!existingColumns.includes('state')) {
+        console.log('Adding column: state');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN state TEXT');
+      }
+      if (!existingColumns.includes('postal_code')) {
+        console.log('Adding column: postal_code');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN postal_code TEXT');
+      }
+      if (!existingColumns.includes('country')) {
+        console.log('Adding column: country');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN country TEXT');
+      }
+      if (!existingColumns.includes('latitude')) {
+        console.log('Adding column: latitude');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN latitude TEXT');
+      }
+      if (!existingColumns.includes('longitude')) {
+        console.log('Adding column: longitude');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN longitude TEXT');
+      }
+
+      // Job Details
+      if (!existingColumns.includes('sub_total')) {
+        console.log('Adding column: sub_total');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN sub_total NUMERIC(10,2)');
+      }
+      if (!existingColumns.includes('item_cost')) {
+        console.log('Adding column: item_cost');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN item_cost NUMERIC(10,2)');
+      }
+      if (!existingColumns.includes('tech_cost')) {
+        console.log('Adding column: tech_cost');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN tech_cost NUMERIC(10,2)');
+      }
+      if (!existingColumns.includes('sub_status')) {
+        console.log('Adding column: sub_status');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN sub_status TEXT');
+      }
+      if (!existingColumns.includes('payment_due_date')) {
+        console.log('Adding column: payment_due_date');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN payment_due_date TIMESTAMP');
+      }
+      if (!existingColumns.includes('job_notes')) {
+        console.log('Adding column: job_notes');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN job_notes TEXT');
+      }
+      if (!existingColumns.includes('comments')) {
+        console.log('Adding column: comments');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN comments TEXT');
+      }
+      if (!existingColumns.includes('timezone')) {
+        console.log('Adding column: timezone');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN timezone TEXT');
+      }
+      if (!existingColumns.includes('referral_company')) {
+        console.log('Adding column: referral_company');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN referral_company TEXT');
+      }
+      if (!existingColumns.includes('service_area')) {
+        console.log('Adding column: service_area');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN service_area TEXT');
+      }
+      if (!existingColumns.includes('created_by')) {
+        console.log('Adding column: created_by');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN created_by TEXT');
+      }
+      if (!existingColumns.includes('tags')) {
+        console.log('Adding column: tags');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN tags JSONB');
+      }
+      if (!existingColumns.includes('team')) {
+        console.log('Adding column: team');
+        await client.query('ALTER TABLE fact_jobs ADD COLUMN team JSONB');
+      }
+
+      await markMigrationApplied(13, 'Add all Workiz job fields to fact_jobs');
+      console.log('Migration 13 completed');
+    }
+
+    // ========== MIGRATION 14: Extend fact_leads table with all Workiz fields (REQ-022) ==========
+    if (!(await isMigrationApplied(14))) {
+      console.log('Applying migration 14: Extend fact_leads table with all Workiz fields (REQ-022)...');
+
+      const existingColumnsResult = await client.query(`
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_schema = 'public' 
+        AND table_name = 'fact_leads'
+      `);
+      const existingColumns = existingColumnsResult.rows.map(row => row.column_name);
+
+      // Basic Lead Information
+      if (!existingColumns.includes('serial_id')) {
+        console.log('Adding column: serial_id');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN serial_id INTEGER');
+      }
+      if (!existingColumns.includes('lead_date_time')) {
+        console.log('Adding column: lead_date_time');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN lead_date_time TIMESTAMP');
+      }
+      if (!existingColumns.includes('lead_end_date_time')) {
+        console.log('Adding column: lead_end_date_time');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN lead_end_date_time TIMESTAMP');
+      }
+      if (!existingColumns.includes('last_status_update')) {
+        console.log('Adding column: last_status_update');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN last_status_update TIMESTAMP');
+      }
+
+      // Status Fields
+      if (!existingColumns.includes('status')) {
+        console.log('Adding column: status');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN status VARCHAR(100)');
+      }
+      if (!existingColumns.includes('sub_status')) {
+        console.log('Adding column: sub_status');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN sub_status VARCHAR(100)');
+      }
+
+      // Contact Information
+      if (!existingColumns.includes('phone')) {
+        console.log('Adding column: phone');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN phone VARCHAR(20)');
+      }
+      if (!existingColumns.includes('second_phone')) {
+        console.log('Adding column: second_phone');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN second_phone VARCHAR(20)');
+      }
+      if (!existingColumns.includes('phone_ext')) {
+        console.log('Adding column: phone_ext');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN phone_ext VARCHAR(10)');
+      }
+      if (!existingColumns.includes('second_phone_ext')) {
+        console.log('Adding column: second_phone_ext');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN second_phone_ext VARCHAR(10)');
+      }
+      if (!existingColumns.includes('email')) {
+        console.log('Adding column: email');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN email VARCHAR(255)');
+      }
+      if (!existingColumns.includes('first_name')) {
+        console.log('Adding column: first_name');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN first_name VARCHAR(100)');
+      }
+      if (!existingColumns.includes('last_name')) {
+        console.log('Adding column: last_name');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN last_name VARCHAR(100)');
+      }
+      if (!existingColumns.includes('company')) {
+        console.log('Adding column: company');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN company VARCHAR(255)');
+      }
+      if (!existingColumns.includes('client_phone')) {
+        console.log('Adding column: client_phone (legacy)');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN client_phone VARCHAR(20)');
+      }
+      if (!existingColumns.includes('client_name')) {
+        console.log('Adding column: client_name (legacy)');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN client_name VARCHAR(255)');
+      }
+
+      // Address Information
+      if (!existingColumns.includes('address')) {
+        console.log('Adding column: address');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN address VARCHAR(255)');
+      }
+      if (!existingColumns.includes('city')) {
+        console.log('Adding column: city');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN city VARCHAR(100)');
+      }
+      if (!existingColumns.includes('state')) {
+        console.log('Adding column: state');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN state VARCHAR(50)');
+      }
+      if (!existingColumns.includes('postal_code')) {
+        console.log('Adding column: postal_code');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN postal_code VARCHAR(10)');
+      }
+      if (!existingColumns.includes('country')) {
+        console.log('Adding column: country');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN country VARCHAR(50)');
+      }
+      if (!existingColumns.includes('latitude')) {
+        console.log('Adding column: latitude');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN latitude VARCHAR(50)');
+      }
+      if (!existingColumns.includes('longitude')) {
+        console.log('Adding column: longitude');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN longitude VARCHAR(50)');
+      }
+      if (!existingColumns.includes('unit')) {
+        console.log('Adding column: unit');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN unit VARCHAR(50)');
+      }
+
+      // Lead Details
+      if (!existingColumns.includes('job_type')) {
+        console.log('Adding column: job_type');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN job_type VARCHAR(50)');
+      }
+      if (!existingColumns.includes('job_source')) {
+        console.log('Adding column: job_source');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN job_source VARCHAR(100)');
+      }
+      if (!existingColumns.includes('referral_company')) {
+        console.log('Adding column: referral_company');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN referral_company VARCHAR(255)');
+      }
+      if (!existingColumns.includes('service_area')) {
+        console.log('Adding column: service_area');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN service_area VARCHAR(100)');
+      }
+      if (!existingColumns.includes('timezone')) {
+        console.log('Adding column: timezone');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN timezone VARCHAR(50)');
+      }
+      if (!existingColumns.includes('created_by')) {
+        console.log('Adding column: created_by');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN created_by VARCHAR(100)');
+      }
+      if (!existingColumns.includes('notes')) {
+        console.log('Adding column: notes');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN notes TEXT');
+      }
+      if (!existingColumns.includes('comments')) {
+        console.log('Adding column: comments');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN comments TEXT');
+      }
+      if (!existingColumns.includes('job_id')) {
+        console.log('Adding column: job_id');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN job_id VARCHAR(255)');
+      }
+
+      // Metadata (JSONB)
+      if (!existingColumns.includes('tags')) {
+        console.log('Adding column: tags');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN tags JSONB');
+      }
+      if (!existingColumns.includes('team')) {
+        console.log('Adding column: team');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN team JSONB');
+      }
+
+      // Legacy fields (backward compatibility)
+      if (!existingColumns.includes('source')) {
+        console.log('Adding column: source (legacy)');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN source VARCHAR(100)');
+      }
+      if (!existingColumns.includes('raw_data')) {
+        console.log('Adding column: raw_data (deprecated, use meta)');
+        await client.query('ALTER TABLE fact_leads ADD COLUMN raw_data JSONB');
+      }
+
+      // Create indexes for performance
+      console.log('Creating indexes for fact_leads...');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_fact_leads_serial_id ON fact_leads(serial_id)');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_fact_leads_status ON fact_leads(status)');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_fact_leads_sub_status ON fact_leads(sub_status)');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_fact_leads_lead_date_time ON fact_leads(lead_date_time)');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_fact_leads_last_status_update ON fact_leads(last_status_update)');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_fact_leads_city ON fact_leads(city)');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_fact_leads_state ON fact_leads(state)');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_fact_leads_postal_code ON fact_leads(postal_code)');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_fact_leads_job_type ON fact_leads(job_type)');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_fact_leads_job_source ON fact_leads(job_source)');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_fact_leads_service_area ON fact_leads(service_area)');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_fact_leads_job_id ON fact_leads(job_id)');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_fact_leads_tags ON fact_leads USING GIN (tags)');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_fact_leads_team ON fact_leads USING GIN (team)');
+      await client.query('CREATE INDEX IF NOT EXISTS idx_fact_leads_raw_data ON fact_leads USING GIN (raw_data)');
+
+      await markMigrationApplied(14, 'Extend fact_leads table with all Workiz fields (REQ-022)');
+      console.log('Migration 14 completed');
+    }
+
     await client.query('COMMIT');
     console.log('All migrations completed successfully');
+
+    // ========== MIGRATION 15: Increase column lengths for fact_leads (Fix REQ-022) ==========
+    if (!(await isMigrationApplied(15))) {
+      console.log('Applying migration 15: Increase column lengths for fact_leads...');
+
+      // We don't use a transaction for ALTER TABLE in some environments, but here we can
+      await client.query('BEGIN');
+
+      await client.query('ALTER TABLE fact_leads ALTER COLUMN status TYPE VARCHAR(255)');
+      await client.query('ALTER TABLE fact_leads ALTER COLUMN sub_status TYPE VARCHAR(255)');
+      await client.query('ALTER TABLE fact_leads ALTER COLUMN job_type TYPE VARCHAR(255)');
+      await client.query('ALTER TABLE fact_leads ALTER COLUMN job_source TYPE VARCHAR(255)');
+      await client.query('ALTER TABLE fact_leads ALTER COLUMN referral_company TYPE VARCHAR(500)');
+      await client.query('ALTER TABLE fact_leads ALTER COLUMN service_area TYPE VARCHAR(255)');
+      await client.query('ALTER TABLE fact_leads ALTER COLUMN created_by TYPE VARCHAR(255)');
+      await client.query('ALTER TABLE fact_leads ALTER COLUMN timezone TYPE VARCHAR(100)');
+
+      await markMigrationApplied(15, 'Increase column lengths for fact_leads to prevent truncation errors');
+      await client.query('COMMIT');
+      console.log('Migration 15 completed');
+    }
+
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Migration failed:', error);

@@ -11,29 +11,42 @@ interface WorkizJobRaw {
   JobDateTime?: string;
   JobEndDateTime?: string;
   CreatedDate?: string;
-  JobTotalPrice?: number;
-  JobAmountDue?: number;
-  SubTotal?: number;
-  item_cost?: number;
-  tech_cost?: number;
+  JobTotalPrice?: number | string;
+  JobAmountDue?: number | string;
+  SubTotal?: number | string;
+  item_cost?: number | string;
+  tech_cost?: number | string;
   ClientId?: number;
   Status?: string;
   SubStatus?: string;
   PaymentDueDate?: string;
   Phone?: string;
+  SecondPhone?: string;
+  PhoneExt?: string;
+  SecondPhoneExt?: string;
   Email?: string;
+  Comments?: string;
   FirstName?: string;
   LastName?: string;
+  Company?: string;
   Address?: string;
   City?: string;
   State?: string;
   PostalCode?: string;
+  Country?: string;
   Unit?: string;
+  Latitude?: string;
+  Longitude?: string;
   ServiceArea?: string;
   JobType?: string;
   JobSource?: string;
   JobNotes?: string;
-  Team?: Array<{ id: number; Name: string }>;
+  ReferralCompany?: string;
+  Timezone?: string;
+  CreatedBy?: string;
+  LastStatusUpdate?: string;
+  Tags?: string[];
+  Team?: Array<{ id: number | string; Name: string; name?: string }>;
   [key: string]: any;
 }
 
@@ -140,9 +153,9 @@ export class SvcWorkizJobs {
       const repairType = rawJob.RepairType || rawJob.repair_type ||
         (jobType && jobType.includes('Repair') ? jobType : null);
 
-      const itemCost = rawJob.item_cost || 0;
-      const techCost = rawJob.tech_cost || 0;
-      const totalCost = itemCost + techCost;
+      const itemCost = typeof rawJob.item_cost === 'number' ? rawJob.item_cost : parseFloat(String(rawJob.item_cost || 0));
+      const techCost = typeof rawJob.tech_cost === 'number' ? rawJob.tech_cost : parseFloat(String(rawJob.tech_cost || 0));
+      const totalCost = (isNaN(itemCost) ? 0 : itemCost) + (isNaN(techCost) ? 0 : techCost);
       const costValue = totalCost > 0 ? totalCost : (rawJob.Cost || rawJob.cost || null);
       const costFinal = costValue !== null && costValue !== undefined ? parseFloat(String(costValue)) : null;
 
@@ -160,7 +173,7 @@ export class SvcWorkizJobs {
         cost: costFinal ?? undefined,
         revenue: revenueValue ?? undefined,
         status: jobStatus || undefined,
-        raw_data: rawJob,
+        raw_data: NormalizationService.normalizeObjectPhoneFields({ ...rawJob }),
       };
     } catch (error) {
       console.error('Error normalizing job:', error, rawJob);
@@ -425,6 +438,40 @@ export class SvcWorkizJobs {
           let jobEndDateTime: Date | null = null;
           let lastStatusUpdate: Date | null = null;
 
+          // Contact Information
+          let phone: string | null = null;
+          let secondPhone: string | null = null;
+          let phoneExt: string | null = null;
+          let secondPhoneExt: string | null = null;
+          let email: string | null = null;
+          let firstName: string | null = null;
+          let lastName: string | null = null;
+          let company: string | null = null;
+
+          // Address Information
+          let address: string | null = null;
+          let city: string | null = null;
+          let state: string | null = null;
+          let postalCode: string | null = null;
+          let country: string | null = null;
+          let latitude: string | null = null;
+          let longitude: string | null = null;
+
+          // Job Details
+          let subTotal: number | null = null;
+          let itemCost: number | null = null;
+          let techCost: number | null = null;
+          let subStatus: string | null = null;
+          let paymentDueDate: Date | null = null;
+          let jobNotes: string | null = null;
+          let comments: string | null = null;
+          let timezone: string | null = null;
+          let referralCompany: string | null = null;
+          let serviceArea: string | null = null;
+          let createdBy: string | null = null;
+          let tags: any = null;
+          let team: any = null;
+
           if (job.raw_data) {
             const rawData = job.raw_data as any;
 
@@ -436,7 +483,7 @@ export class SvcWorkizJobs {
 
             // TechnicianName from Team[0].Name
             if (rawData.Team && Array.isArray(rawData.Team) && rawData.Team.length > 0) {
-              technicianName = rawData.Team[0].Name || null;
+              technicianName = rawData.Team[0].Name || rawData.Team[0].name || null;
             }
 
             // JobAmountDue
@@ -459,7 +506,7 @@ export class SvcWorkizJobs {
               }
             }
 
-            // LastStatusUpdate - try different possible field names
+            // LastStatusUpdate
             const statusUpdateValue = rawData.LastStatusUpdate || rawData.LastStatusChange ||
               rawData.StatusUpdate || rawData.status_updated_at ||
               rawData.UpdatedDate || rawData.updated_at;
@@ -469,6 +516,54 @@ export class SvcWorkizJobs {
                 lastStatusUpdate = new Date(normalized);
               }
             }
+
+            // Contact Information
+            phone = NormalizationService.phone(rawData.Phone) || null;
+            secondPhone = NormalizationService.phone(rawData.SecondPhone) || null;
+            phoneExt = rawData.PhoneExt || null;
+            secondPhoneExt = rawData.SecondPhoneExt || null;
+            email = rawData.Email || null;
+            firstName = rawData.FirstName || null;
+            lastName = rawData.LastName || null;
+            company = rawData.Company || null;
+
+            // Address Information
+            address = rawData.Address || null;
+            city = rawData.City || null;
+            state = rawData.State || null;
+            postalCode = NormalizationService.zip(rawData.PostalCode) || null;
+            country = rawData.Country || null;
+            latitude = rawData.Latitude || null;
+            longitude = rawData.Longitude || null;
+
+            // Job Details
+            if (rawData.SubTotal !== null && rawData.SubTotal !== undefined) {
+              subTotal = parseFloat(String(rawData.SubTotal));
+              if (isNaN(subTotal)) subTotal = null;
+            }
+            if (rawData.item_cost !== null && rawData.item_cost !== undefined) {
+              itemCost = parseFloat(String(rawData.item_cost));
+              if (isNaN(itemCost)) itemCost = null;
+            }
+            if (rawData.tech_cost !== null && rawData.tech_cost !== undefined) {
+              techCost = parseFloat(String(rawData.tech_cost));
+              if (isNaN(techCost)) techCost = null;
+            }
+            subStatus = rawData.SubStatus || null;
+            if (rawData.PaymentDueDate) {
+              const normalized = NormalizationService.dateTime(rawData.PaymentDueDate);
+              if (normalized) {
+                paymentDueDate = new Date(normalized);
+              }
+            }
+            jobNotes = rawData.JobNotes || null;
+            comments = rawData.Comments || null;
+            timezone = rawData.Timezone || null;
+            referralCompany = rawData.ReferralCompany || null;
+            serviceArea = rawData.ServiceArea || null;
+            createdBy = rawData.CreatedBy || null;
+            tags = rawData.Tags ? JSON.stringify(rawData.Tags) : null;
+            team = rawData.Team ? JSON.stringify(rawData.Team) : null;
           }
 
           const metaJson = job.raw_data ? JSON.stringify(job.raw_data) : null;
@@ -479,9 +574,14 @@ export class SvcWorkizJobs {
             `INSERT INTO fact_jobs (
               job_id, lead_id, created_at, scheduled_at, source_id, type, client_id,
               serial_id, technician_name, job_amount_due, job_total_price,
-              job_end_date_time, last_status_update, meta
+              job_end_date_time, last_status_update,
+              phone, second_phone, phone_ext, second_phone_ext, email, first_name, last_name, company,
+              address, city, state, postal_code, country, latitude, longitude,
+              sub_total, item_cost, tech_cost, sub_status, payment_due_date,
+              job_notes, comments, timezone, referral_company, service_area, created_by,
+              tags, team, meta, import_source
             )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43)
              ON CONFLICT (job_id) 
              DO UPDATE SET 
                lead_id = EXCLUDED.lead_id,
@@ -496,7 +596,36 @@ export class SvcWorkizJobs {
                job_total_price = EXCLUDED.job_total_price,
                job_end_date_time = EXCLUDED.job_end_date_time,
                last_status_update = EXCLUDED.last_status_update,
+               phone = EXCLUDED.phone,
+               second_phone = EXCLUDED.second_phone,
+               phone_ext = EXCLUDED.phone_ext,
+               second_phone_ext = EXCLUDED.second_phone_ext,
+               email = EXCLUDED.email,
+               first_name = EXCLUDED.first_name,
+               last_name = EXCLUDED.last_name,
+               company = EXCLUDED.company,
+               address = EXCLUDED.address,
+               city = EXCLUDED.city,
+               state = EXCLUDED.state,
+               postal_code = EXCLUDED.postal_code,
+               country = EXCLUDED.country,
+               latitude = EXCLUDED.latitude,
+               longitude = EXCLUDED.longitude,
+               sub_total = EXCLUDED.sub_total,
+               item_cost = EXCLUDED.item_cost,
+               tech_cost = EXCLUDED.tech_cost,
+               sub_status = EXCLUDED.sub_status,
+               payment_due_date = EXCLUDED.payment_due_date,
+               job_notes = EXCLUDED.job_notes,
+               comments = EXCLUDED.comments,
+               timezone = EXCLUDED.timezone,
+               referral_company = EXCLUDED.referral_company,
+               service_area = EXCLUDED.service_area,
+               created_by = EXCLUDED.created_by,
+               tags = EXCLUDED.tags,
+               team = EXCLUDED.team,
                meta = EXCLUDED.meta,
+               import_source = EXCLUDED.import_source,
                updated_at_db = CURRENT_TIMESTAMP`,
             [
               job.id,
@@ -512,7 +641,36 @@ export class SvcWorkizJobs {
               jobTotalPrice,
               jobEndDateTime,
               lastStatusUpdate,
+              phone,
+              secondPhone,
+              phoneExt,
+              secondPhoneExt,
+              email,
+              firstName,
+              lastName,
+              company,
+              address,
+              city,
+              state,
+              postalCode,
+              country,
+              latitude,
+              longitude,
+              subTotal,
+              itemCost,
+              techCost,
+              subStatus,
+              paymentDueDate,
+              jobNotes,
+              comments,
+              timezone,
+              referralCompany,
+              serviceArea,
+              createdBy,
+              tags,
+              team,
               metaJson,
+              'api'
             ]
           );
 
